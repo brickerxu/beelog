@@ -1,0 +1,11 @@
+[package]
+name = "beelog"
+version = "0.0.1"
+edition = "2024"
+
+[[bin]]
+name = "beelog"
+path = "src/main.rs"
+
+[dependencies]
+ssh2 = "0.9.5"

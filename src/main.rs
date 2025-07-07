@@ -1,25 +1,31 @@
 use std::io::{self, Write};
-use beelog::jump_server_bridge::{JumpServer, JumpServerBridge};
+use std::process::exit;
+use beelog::config;
+use beelog::jump_server_bridge::JumpServerBridge;
 
 fn main() {
+    // 读取配置
+    let server_res = config::read_server_config(&"".to_string(), &"".to_string());
+    if let Err(err) = server_res {
+        println!("读取配置异常: {}", err);
+        exit(1);
+    }
+    let (server_info, nodes) = server_res.unwrap();
     
-    let host = "192.168.3.88".to_string();
-    let port = 2233;
-    let user = "xubo".to_string();
-    let private_key = "/Users/xubo/resource/xy_key/xubo-jumpserver-test.pem".to_string();
-    let jump_server = JumpServer::new(host, port, user, private_key);
-
-    let nodes = vec!["dex-04", "dex-04"];
+    // 建立连接
     let mut bridges = Vec::new();
     for node in nodes {
-        let mut bridge = JumpServerBridge::new(&jump_server, node.to_string());
+        let mut bridge = JumpServerBridge::new(&server_info, node.to_string());
         bridge.create_bridge().expect(&format!("{}连接失败", &node));
         bridges.push(bridge);
     }
+    
+    // 循环等待执行命令
     loop {
         print!("> ");
-        io::stdout().flush().unwrap(); // 保证提示符立即输出
-
+        // 保证提示符立即输出
+        io::stdout().flush().unwrap();
+    
         let mut input = String::new();
         match io::stdin().read_line(&mut input) {
             Ok(_) => {
@@ -31,7 +37,7 @@ fn main() {
                 }
             }
             Err(e) => {
-                eprintln!("❌ 输入错误: {}", e);
+                eprintln!("输入错误: {}", e);
                 break;
             }
         }

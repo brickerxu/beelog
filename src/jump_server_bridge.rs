@@ -1,32 +1,19 @@
 use ssh2::{Channel, Session};
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use std::io::{Write, Read};
+use super::config::ServerInfo;
 
-pub struct JumpServer {
-    host: String,
-    port: u16,
-    user: String,
-    key_path: String,
-}
-
-impl JumpServer {
-    pub fn new(host: String, port: u16, user: String, key_path: String) -> Self {
-        JumpServer {
-            host, port, user, key_path 
-        }
-    }
-}
 
 pub struct JumpServerBridge<'a> {
-    pub jump_server: &'a JumpServer,
+    pub jump_server: &'a ServerInfo,
     pub node: String,
     pub channel: Option<Channel>,
 }
 
 impl<'a> JumpServerBridge<'a> {
-    pub fn new(jump_server: &'a JumpServer, node: String) -> Self {
+    pub fn new(jump_server: &'a ServerInfo, node: String) -> Self {
         JumpServerBridge {
             jump_server, node,
             channel: None
@@ -35,8 +22,11 @@ impl<'a> JumpServerBridge<'a> {
 
     pub fn create_bridge(&mut self) -> Result<(), String> {
         let server = self.jump_server;
-        let addr = format!("{}:{}", server.host, server.port);
-        let tcp = TcpStream::connect(&addr).map_err(|e| format!("连接失败: {}", e))?;
+        let host_split: Vec<u8> = server.host.split(".")
+            .map(|e| {e.parse().expect(&format!("Host转换错误: {} - {}", server.host, e))})
+            .collect();
+        let socket = SocketAddrV4::new(Ipv4Addr::new(host_split[0], host_split[1], host_split[2], host_split[3]), server.port);
+        let tcp = TcpStream::connect_timeout(&SocketAddr::V4(socket), Duration::from_secs(20)).map_err(|e| format!("连接失败: {}", e))?;
         tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut sess = Session::new().map_err(|e| format!("创建 session 失败: {}", e))?;
         sess.set_tcp_stream(tcp);
@@ -54,7 +44,7 @@ impl<'a> JumpServerBridge<'a> {
         let mut channel = sess.channel_session().map_err(|e| format!("创建 channel 失败: {}", e))?;
         channel.request_pty("xterm", None, None).map_err(|e| format!("PTY 请求失败: {}", e))?;
         channel.shell().map_err(|e| format!("打开 shell 失败: {}", e))?; // 👈 开启 shell 模式
-        
+
         // 等待 JumpServer 菜单出现
         Self::wait_for_prompt(&mut channel, "Opt>", 10)?;
         // 输入节点 IP 或主机名
@@ -77,16 +67,9 @@ impl<'a> JumpServerBridge<'a> {
             Err("未建立 SSH 通道".to_string())
         }
     }
-    
-    pub fn close(&self) -> Result<(), String> {
-        
-        Ok(())
-    }
 
-    
-    fn verify_mfa(channel: &mut Channel, sercet_code: &String) -> Result<(), String> {
-        Self::wait_for_prompt(channel, "OTP Code", 10)?;
-        
+    pub fn close(&self) -> Result<(), String> {
+
         Ok(())
     }
 

@@ -1,8 +1,7 @@
-use std::io::{Error, ErrorKind};
-use std::fs;
-use std::path::PathBuf;
 use serde::Deserialize;
-
+use std::fs;
+use std::io::{Error, ErrorKind};
+use super::args::Args;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -45,42 +44,38 @@ pub struct NodeGroup {
 /**
  * 读取服务器信息
  *
- * server 服务器名称，如果为空则使用配置文件中的默认服务器
- * node_group 节点组名称，如果为空则使用配置文件中的默认节点
+ * args 传参
+ *      server 服务器名称，如果为空则使用配置文件中的默认服务器
+ *      node_group 节点组名称，如果为空则使用配置文件中的默认节点
  *
  * return 返回服务器信息和节点组列表
  *
  * Error 如果未找到服务器或节点组配置，则返回错误
  */
-pub fn read_server_config(server: &String, node_group: &String) -> Result<(ServerInfo, Vec<String>), Box<dyn std::error::Error>> {
+pub fn read_server_config(args: &Args) -> Result<(ServerInfo, Vec<String>), Box<dyn std::error::Error>> {
     let config = load_config()?;
     let server_config = config.server;
-    let mut default_server = server.clone();
-    if server.is_empty() {
-        default_server = server_config.default_server;
-    }
+    let arg_server = args.server.as_ref().unwrap_or(&server_config.default_server);
+
     let mut server_info_opt = None;
     for info in server_config.servers {
-        if default_server.eq(&info.name) {
+        if arg_server.eq(&info.name) {
             server_info_opt = Some(info);
             break;
         }
     }
-    if None.eq(&server_info_opt) {
-        return Err(Error::new(ErrorKind::NotFound, format!("未找到server配置: {}", default_server)).into())
+    if None == server_info_opt {
+        return Err(Error::new(ErrorKind::NotFound, format!("未找到server配置: {}", arg_server)).into())
     }
-    let mut default_node_group = node_group.clone();
-    if node_group.is_empty() {
-        default_node_group = server_config.default_node_group;
-    }
+    let arg_node_group = args.node_group.as_ref().unwrap_or(&server_config.default_node_group);
     let mut node_groups_opt = None;
     for group in server_config.node_groups {
-        if default_node_group.eq(&group.group) {
+        if arg_node_group.eq(&group.group) {
             node_groups_opt = Some(group.nodes);
         }
     }
-    if None.eq(&node_groups_opt) {
-        return Err(Error::new(ErrorKind::NotFound, format!("未找到node group配置: {}", default_node_group)).into())
+    if None == node_groups_opt {
+        return Err(Error::new(ErrorKind::NotFound, format!("未找到node group配置: {}", arg_node_group)).into())
     }
 
     Ok((server_info_opt.unwrap(), node_groups_opt.unwrap()))
@@ -96,7 +91,6 @@ fn load_config() -> Result<Config, Box<dyn std::error::Error>>{
     let home_dir = dirs::home_dir().unwrap();
     let package_name = env!("CARGO_PKG_NAME"); // 读取 Cargo.toml 中的 package.name
     let config_path = home_dir.join(".config").join(package_name).join("config.toml");
-    let config_path = PathBuf::from("config.toml");
     if !config_path.exists() {
         return Err(Error::new(ErrorKind::NotFound, format!("配置文件未找到 {}", config_path.display())).into());
     }

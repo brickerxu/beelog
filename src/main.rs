@@ -4,6 +4,7 @@ use beelog::config;
 use beelog::args;
 use beelog::jump_server_bridge::JumpServerBridge;
 
+const QUIT : &str = "quit";
 
 fn main() {
     let args = args::init();
@@ -29,6 +30,9 @@ fn main() {
         match io::stdin().read_line(&mut input) {
             Ok(_) => {
                 let command = input.trim();
+                if QUIT.eq(command) {
+                    break;
+                }
                 for b in &mut bridges {
                     let (node, output) = b.exec(command).unwrap();
                     println!("======{}=======", node);
@@ -36,9 +40,15 @@ fn main() {
                 }
             }
             Err(e) => {
-                eprintln!("❌ 输入错误: {}", e);
+                eprintln!("输入错误: {}", e);
                 break;
             }
+        }
+    }
+    for b in &mut bridges {
+        let res = b.close();
+        if let Err(err) = res {
+            println!("关闭失败[{}]: {}", b.node, err);
         }
     }
 }

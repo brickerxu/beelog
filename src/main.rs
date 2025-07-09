@@ -19,7 +19,7 @@ fn main() {
     let mut bridges = Vec::new();
     for node in nodes {
         let mut bridge = JumpServerBridge::new(&server_info, node.to_string());
-        bridge.create_bridge().expect(&format!("{}连接失败", &node));
+        bridge.create_bridge().expect(&format!("{}>连接失败", &node));
         bridges.push(bridge);
     }
     loop {

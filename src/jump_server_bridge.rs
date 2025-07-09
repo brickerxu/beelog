@@ -39,7 +39,7 @@ impl<'a> JumpServerBridge<'a> {
             return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, "无效的 IP 地址")));
         }
         let socket = SocketAddrV4::new(Ipv4Addr::new(host_split[0], host_split[1], host_split[2], host_split[3]), server.port);
-        let tcp = TcpStream::connect_timeout(&SocketAddr::V4(socket), Duration::from_secs(20)).map_err(|e| format!("连接失败: {}", e))?;
+        let tcp = TcpStream::connect_timeout(&SocketAddr::V4(socket), Duration::from_secs(10)).map_err(|e| format!("连接失败: {}", e))?;
         tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut sess = Session::new().map_err(|e| format!("创建 session 失败: {}", e))?;
         sess.set_tcp_stream(tcp);

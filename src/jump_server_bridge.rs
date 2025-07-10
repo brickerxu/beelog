@@ -1,4 +1,4 @@
-use ssh2::{Channel, Session};
+use ssh2::{Channel, Session, KeyboardInteractivePrompt};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -8,15 +8,48 @@ use super::config::ServerInfo;
 use super::mfa;
 
 
+const JUMP_SERVER_MARK : &str = "Opt>";
+const MFA_MARK : &str = "OTP Code";
+const PROMPT_MARK : &str = "$";
+
+
+struct MfaKeyboardPrompt {
+    secret_code: String,
+}
+
+impl MfaKeyboardPrompt {
+    fn new (secret_code: &str) -> Self {
+        MfaKeyboardPrompt {
+            secret_code: secret_code.to_string(),
+        }
+    }
+}
+
+impl KeyboardInteractivePrompt for MfaKeyboardPrompt {
+    fn prompt(
+        &mut self,
+        _username: &str,
+        _instructions: &str,
+        prompts: &[ssh2::Prompt<'_>]
+    ) -> Vec<String> {
+        let mut responses = Vec::new();
+        for prompt in prompts {
+            if prompt.text.contains(MFA_MARK) {
+                let mfa_code = mfa::get_google_code(&self.secret_code);
+                responses.push(mfa_code);
+            } else {
+                println!("未知的认证方式：{}", prompt.text);
+            }
+        }
+        responses
+    }
+}
+
 pub struct JumpServerBridge<'a> {
     pub jump_server: &'a ServerInfo,
     pub node: String,
     pub channel: Option<Channel>,
 }
-
-const JUMP_SERVER_MARK : &str = "Opt>"; 
-const MFA_MARK : &str = "OTP Code";
-const PROMPT_MARK : &str = "$";
 
 impl<'a> JumpServerBridge<'a> {
     pub fn new(jump_server: &'a ServerInfo, node: String) -> Self {
@@ -40,16 +73,24 @@ impl<'a> JumpServerBridge<'a> {
         }
         let socket = SocketAddrV4::new(Ipv4Addr::new(host_split[0], host_split[1], host_split[2], host_split[3]), server.port);
         let tcp = TcpStream::connect_timeout(&SocketAddr::V4(socket), Duration::from_secs(10)).map_err(|e| format!("连接失败: {}", e))?;
-        tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut sess = Session::new().map_err(|e| format!("创建 session 失败: {}", e))?;
         sess.set_tcp_stream(tcp);
-        sess.set_timeout(3000);
+        sess.set_timeout(60 * 5);
         sess.handshake().map_err(|e| format!("握手失败: {}", e))?;
 
-        
-        let key_path = Path::new(&server.key_path);
-        sess.userauth_pubkey_file(&server.user, None, key_path, None)
-            .map_err(|e| format!("认证失败: {}", e))?;
+        let pri_key_path = Path::new(&server.key_path);
+        let auth_pubkey_res = sess.userauth_pubkey_file(&server.user, None, pri_key_path, None);
+        if let Err(e) = auth_pubkey_res {
+            if let Some(secret_code) = &server.secret_code {
+                let mut prompt = MfaKeyboardPrompt::new(secret_code);
+                let auth_keyboard_res = sess.userauth_keyboard_interactive(&server.user, &mut prompt);
+                if let Err(e) = auth_keyboard_res {
+                    return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("二次认证失败: {}", e))));
+                }
+            } else {
+                return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("证书认证失败: {}", e))));
+            }
+        } 
 
         if !sess.authenticated() {
             return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "认证失败")));
@@ -59,24 +100,9 @@ impl<'a> JumpServerBridge<'a> {
         channel.request_pty("xterm", None, None).map_err(|e| format!("PTY 请求失败: {}", e))?;
         channel.shell().map_err(|e| format!("打开 shell 失败: {}", e))?; // 👈 开启 shell 模式
 
-        let (m, prompt, _) = Self::wait_for_prompt(&mut channel, vec!(JUMP_SERVER_MARK.to_string(), MFA_MARK.to_string()), 10)?;
+        let (m, prompt, _) = Self::wait_for_prompt(&mut channel, vec!(JUMP_SERVER_MARK.to_string()), 10)?;
         if m {
-            if prompt == MFA_MARK {
-                // 如果需要 MFA 验证
-                if let Some(secret_code) = &server.secret_code {
-                    let mfa_code = mfa::get_google_code(secret_code);
-                    Self::send_line(&mut channel, mfa_code.as_str())?;
-                    // 等待验证结果
-                    let (m, _, _) = Self::wait_for_prompt(&mut channel, vec!(JUMP_SERVER_MARK.to_string()), 10)?;
-                    if !m {
-                        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "MFA 验证失败")));
-                    }
-                } else {
-                    return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "需要 MFA 验证，但未提供 secret_code")));
-                }
-            } else if prompt == JUMP_SERVER_MARK  {
-                // nothing
-            } else {
+            if prompt != JUMP_SERVER_MARK  {
                 return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "未能正确连接")));
             }
         } else {
@@ -125,13 +151,11 @@ impl<'a> JumpServerBridge<'a> {
                 Ok(n) => {
                     buffer.extend_from_slice(&temp[..n]);
                     let content = String::from_utf8_lossy(&buffer);
-                    // println!("content: {}", content);
                     for prompt in prompts.iter() {
                         if content.contains(prompt) {
                             return Ok((true, prompt.clone(), content.to_string()));
                         }
                     }
-                    // println!("+++++++++++++++++++++++++++++++++++++++++++++");
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
                 Err(e) => return Err(Box::new(e)),

@@ -75,7 +75,7 @@ impl<'a> JumpServerBridge<'a> {
         let tcp = TcpStream::connect_timeout(&SocketAddr::V4(socket), Duration::from_secs(10)).map_err(|e| format!("连接失败: {}", e))?;
         let mut sess = Session::new().map_err(|e| format!("创建 session 失败: {}", e))?;
         sess.set_tcp_stream(tcp);
-        sess.set_timeout(60 * 5);
+        sess.set_timeout(1000 * 60 * 5);
         sess.handshake().map_err(|e| format!("握手失败: {}", e))?;
 
         let pri_key_path = Path::new(&server.key_path);

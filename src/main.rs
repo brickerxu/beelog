@@ -23,7 +23,7 @@ fn main() {
         bridges.push(bridge);
     }
     loop {
-        print!("> ");
+        print!(">> ");
         io::stdout().flush().unwrap(); // 保证提示符立即输出
     
         let mut input = String::new();
@@ -47,10 +47,16 @@ fn main() {
             }
         }
     }
-    for b in &mut bridges {
-        let res = b.close();
-        if let Err(err) = res {
-            println!("关闭失败[{}]: {}", b.node, err);
+    close_bridges(&mut bridges);
+}
+
+fn close_bridges(bridges: &mut Vec<JumpServerBridge>) {
+    for b in bridges {
+        if b.is_ok() {
+            let res = b.close();
+            if let Err(err) = res {
+                println!("关闭失败[{}]: {}", b.node, err);
+            }
         }
     }
 }

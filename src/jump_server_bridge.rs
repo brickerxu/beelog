@@ -51,7 +51,8 @@ impl KeyboardInteractivePrompt for MfaKeyboardPrompt {
 pub struct JumpServerBridge<'a> {
     pub jump_server: &'a ServerInfo,
     pub node: String,
-    pub channel: Option<Channel>,
+    channel: Option<Channel>,
+    success: bool,
 }
 
 /// jumpserver连接实现
@@ -59,7 +60,8 @@ impl<'a> JumpServerBridge<'a> {
     pub fn new(jump_server: &'a ServerInfo, node: String) -> Self {
         JumpServerBridge {
             jump_server, node,
-            channel: None
+            channel: None,
+            success: false,
         }
     }
 
@@ -117,6 +119,7 @@ impl<'a> JumpServerBridge<'a> {
         // 等待登录目标主机
         let _ = Self::wait_for_prompt(&mut channel, vec!(PROMPT_MARK.to_string()), 10)?;
         self.channel = Some(channel);
+        self.success = true;
         println!("===连接成功: {} -> {}", server.host, self.node);
         Ok(())
     }
@@ -172,5 +175,9 @@ impl<'a> JumpServerBridge<'a> {
         channel.write_all(format!("{}\r\n", input).as_bytes())
             .map_err(|e| format!("写入失败: {}", e))?;
         channel.flush().map_err(|e| format!("flush失败: {}", e))
+    }
+    
+    pub fn is_ok(&self) -> bool {
+        self.success
     }
 }

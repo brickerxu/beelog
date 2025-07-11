@@ -1,0 +1,8 @@
+{
+    "targets": [
+        {
+            "os": "aarch64-apple-darwin",
+            "os_name": "osx-aarch64"
+        }
+    ]
+}

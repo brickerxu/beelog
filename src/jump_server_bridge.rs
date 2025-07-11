@@ -12,8 +12,9 @@ const JUMP_SERVER_MARK : &str = "Opt>";
 const MFA_MARK : &str = "OTP Code";
 const PROMPT_MARK : &str = "$";
 
-
+/// MFA交互结构
 struct MfaKeyboardPrompt {
+    /// MFA code
     secret_code: String,
 }
 
@@ -25,6 +26,7 @@ impl MfaKeyboardPrompt {
     }
 }
 
+/// MFA交互实现
 impl KeyboardInteractivePrompt for MfaKeyboardPrompt {
     fn prompt(
         &mut self,
@@ -45,12 +47,14 @@ impl KeyboardInteractivePrompt for MfaKeyboardPrompt {
     }
 }
 
+/// jumpserver连接结构体
 pub struct JumpServerBridge<'a> {
     pub jump_server: &'a ServerInfo,
     pub node: String,
     pub channel: Option<Channel>,
 }
 
+/// jumpserver连接实现
 impl<'a> JumpServerBridge<'a> {
     pub fn new(jump_server: &'a ServerInfo, node: String) -> Self {
         JumpServerBridge {
@@ -59,9 +63,7 @@ impl<'a> JumpServerBridge<'a> {
         }
     }
 
-    /**
-     *
-     */
+    /// 建立连接
     pub fn create_bridge(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let server = self.jump_server;
         println!("===开始连接: {} -> {}", server.host, self.node);
@@ -119,6 +121,7 @@ impl<'a> JumpServerBridge<'a> {
         Ok(())
     }
 
+    /// 命令执行
     pub fn exec(&mut self, command: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
         if let Some(channel) = self.channel.as_mut() {
             Self::send_line(channel, command)?;
@@ -130,6 +133,7 @@ impl<'a> JumpServerBridge<'a> {
         }
     }
 
+    /// 关闭连接
     pub fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let server = self.jump_server;
         let channel = self.channel.as_mut();

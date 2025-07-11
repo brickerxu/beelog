@@ -30,7 +30,9 @@ fn main() {
         match io::stdin().read_line(&mut input) {
             Ok(_) => {
                 let command = input.trim();
-                if QUIT.eq(command) {
+                if "".eq(command) {
+                    continue;
+                } else if QUIT.eq(command) {
                     break;
                 }
                 for b in &mut bridges {

@@ -139,8 +139,11 @@ impl<'a> JumpServerBridge<'a> {
     /// 关闭连接
     pub fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let server = self.jump_server;
-        let channel = self.channel.as_mut();
-        channel.unwrap().send_eof()?;
+        let channel = self.channel.as_mut().unwrap();
+        channel.send_eof()?;
+        channel.wait_eof()?;
+        channel.close()?;
+        channel.wait_close()?;
         println!("===断开连接: {} -> {}", server.host, self.node);
         Ok(())
     }

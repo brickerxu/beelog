@@ -4,6 +4,9 @@ use std::io::{Error, ErrorKind};
 use std::path::PathBuf;
 use super::args::Args;
 
+const CONFIG_FILE_NAME: &str = "config.toml";
+const HISTORY_FILE_NAME: &str = "history.txt";
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
@@ -86,8 +89,12 @@ pub fn read_server_config(args: &Args) -> Result<(ServerInfo, Vec<String>), Box<
  * 获取命令历史存储路径
  */
 pub fn get_history_path() -> PathBuf {
-    let config_dir = get_config_dir();
-    config_dir.join("history.txt")
+    if cfg!(debug_assertions) {
+        PathBuf::from(HISTORY_FILE_NAME)
+    } else {
+        let config_dir = get_config_dir();
+        config_dir.join(HISTORY_FILE_NAME)
+    }
 }
 
 /**
@@ -97,8 +104,12 @@ pub fn get_history_path() -> PathBuf {
  * 如果文件存在则解析为 Config 结构体
  */
 fn load_config() -> Result<Config, Box<dyn std::error::Error>>{
-    let config_dir = get_config_dir();
-    let config_file_path = config_dir.join("config.toml");
+    let config_file_path = if cfg!(debug_assertions) {
+        PathBuf::from(CONFIG_FILE_NAME)
+    } else {
+        let config_dir = get_config_dir();
+        config_dir.join(CONFIG_FILE_NAME)
+    };
     if !config_file_path.exists() {
         return Err(Error::new(ErrorKind::NotFound, format!("配置文件未找到 {}", config_file_path.display())).into());
     }

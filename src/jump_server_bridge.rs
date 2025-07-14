@@ -129,7 +129,7 @@ impl<'a> JumpServerBridge<'a> {
         if let Some(channel) = self.channel.as_mut() {
             Self::send_line(channel, command)?;
             // 等待登录目标主机
-            let (_, _, output) = Self::wait_for_prompt(channel, vec!(PROMPT_MARK.to_string()), 10)?;
+            let (_, _, output) = Self::wait_for_prompt(channel, vec!(self.node.to_string()), 60 * 20)?;
             Ok((self.node.clone(), output))
         } else {
             Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "未建立 SSH 通道")))
@@ -150,17 +150,21 @@ impl<'a> JumpServerBridge<'a> {
      */
     fn wait_for_prompt(channel: &mut Channel, prompts: Vec<String>, timeout_secs: u64) -> Result<(bool, String, String), Box<dyn std::error::Error>> {
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-        let mut buffer = Vec::new();
-        let mut temp = [0u8; 1024];
+        let mut prompt_match = false;
+        let mut match_prompt = String::new();
+        let mut content = String::new();
 
-        while Instant::now() < deadline {
-            match channel.read(&mut temp) {
+        'out_loop: while Instant::now() < deadline {
+            let mut buffer = [0u8; 1024];
+            match channel.read(&mut buffer) {
                 Ok(n) => {
-                    buffer.extend_from_slice(&temp[..n]);
-                    let content = String::from_utf8_lossy(&buffer);
+                    let current_content = String::from_utf8_lossy(&buffer[..n]);
+                    content.push_str(current_content.to_string().as_str());
                     for prompt in prompts.iter() {
-                        if content.contains(prompt) {
-                            return Ok((true, prompt.clone(), content.to_string()));
+                        if current_content.contains(prompt) {
+                            prompt_match = true;
+                            match_prompt = prompt.clone();
+                            break 'out_loop;
                         }
                     }
                 }
@@ -168,11 +172,11 @@ impl<'a> JumpServerBridge<'a> {
                 Err(e) => return Err(Box::new(e)),
             }
         }
-        Ok((false, String::from(""), String::from("")))
+        Ok((prompt_match, match_prompt, content.to_string()))
     }
 
     fn send_line(channel: &mut Channel, input: &str) -> Result<(), String> {
-        channel.write_all(format!("{}\r\n", input).as_bytes())
+        channel.write_all(format!("{}\r", input).as_bytes())
             .map_err(|e| format!("写入失败: {}", e))?;
         channel.flush().map_err(|e| format!("flush失败: {}", e))
     }

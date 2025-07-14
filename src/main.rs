@@ -21,7 +21,11 @@ fn main() {
     let mut bridges = Vec::new();
     for node in nodes {
         let mut bridge = JumpServerBridge::new(&server_info, node.to_string());
-        bridge.create_bridge().expect(&format!("{}>连接失败", &node));
+        if let Err(e) = bridge.create_bridge() {
+            println!("{} > 连接失败: {}", node, e);
+            close_bridges(&mut bridges);
+            exit(1);
+        }
         bridges.push(bridge);
     }
     let mut editor = get_editor().unwrap();

@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::fs;
 use std::io::{Error, ErrorKind};
+use std::path::PathBuf;
 use super::args::Args;
 
 #[derive(Debug, Deserialize)]
@@ -22,7 +23,7 @@ pub struct ServerConfig {
     pub node_groups: Vec<NodeGroup>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[derive(PartialEq)]
 pub struct ServerInfo {
     pub name: String,
@@ -34,7 +35,7 @@ pub struct ServerInfo {
     pub secret_code: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct NodeGroup {
     pub group: String,
     pub nodes: Vec<String>,
@@ -82,19 +83,36 @@ pub fn read_server_config(args: &Args) -> Result<(ServerInfo, Vec<String>), Box<
 }
 
 /**
+ * 获取命令历史存储路径
+ */
+pub fn get_history_path() -> PathBuf {
+    let config_dir = get_config_dir();
+    config_dir.join("history.txt")
+}
+
+/**
  * 加载配置文件
  * 读取用户主目录下的 .config/<package_name>/config.toml 文件
  * 如果文件不存在则返回错误
  * 如果文件存在则解析为 Config 结构体
  */
 fn load_config() -> Result<Config, Box<dyn std::error::Error>>{
-    let home_dir = dirs::home_dir().unwrap();
-    let package_name = env!("CARGO_PKG_NAME"); // 读取 Cargo.toml 中的 package.name
-    let config_path = home_dir.join(".config").join(package_name).join("config.toml");
-    if !config_path.exists() {
-        return Err(Error::new(ErrorKind::NotFound, format!("配置文件未找到 {}", config_path.display())).into());
+    let config_dir = get_config_dir();
+    let config_file_path = config_dir.join("config.toml");
+    if !config_file_path.exists() {
+        return Err(Error::new(ErrorKind::NotFound, format!("配置文件未找到 {}", config_file_path.display())).into());
     }
-    let content = fs::read_to_string(config_path)?;
+    let content = fs::read_to_string(config_file_path)?;
     let config: Config = toml::from_str(&content)?;
     Ok(config)
+}
+
+/**
+ * 获取配置目录
+ */
+fn get_config_dir() -> PathBuf {
+    let home_dir = dirs::home_dir().unwrap();
+    // 读取 Cargo.toml 中的 package.name
+    let package_name = env!("CARGO_PKG_NAME");
+    home_dir.join(".config").join(package_name)
 }

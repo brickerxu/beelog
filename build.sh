@@ -49,9 +49,10 @@ for ((i = 0; i < COUNT; i++)); do
 
         BUILD_PATH="target/$TARGET/release/$BIN_NAME"
         PACKAGE_NAME="${APP_NAME}-${ALIAS}"
+        BIN_PATH="${PACKAGE_NAME}/bin"
 
-        mkdir -p "$OUT_DIR/$PACKAGE_NAME"
-        cp "$BUILD_PATH" "$OUT_DIR/$PACKAGE_NAME/"
+        mkdir -p "$OUT_DIR/$BIN_PATH"
+        cp "$BUILD_PATH" "$OUT_DIR/$BIN_PATH/"
 
         echo "📦 打包 $PACKAGE_NAME..."
         cd "$OUT_DIR"

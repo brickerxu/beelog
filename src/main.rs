@@ -42,9 +42,16 @@ fn main() {
                 // 将命令加入历史
                 add_editor_history(&mut editor, command);
                 for b in &mut bridges {
-                    let (node, output) = b.exec(command).unwrap();
-                    println!("======{}=======", node);
-                    println!("{}", output);
+                    let res = b.exec(command);
+                    match res {
+                        Ok((node, output)) => {
+                            println!("======{}=======", node);
+                            println!("{}", output);
+                        },
+                        Err(e) => {
+                            println!("{} > 执行命令错误: {}", &b.node, e);
+                        }
+                    }
                 }
             },
             Err(ReadlineError::Interrupted) => {
@@ -70,7 +77,7 @@ fn close_bridges(bridges: &mut Vec<JumpServerBridge>) {
         if b.is_ok() {
             let res = b.close();
             if let Err(err) = res {
-                println!("关闭失败[{}]: {}", b.node, err);
+                println!("{} > 关闭失败: {}", b.node, err);
             }
         }
     }

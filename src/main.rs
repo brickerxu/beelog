@@ -92,6 +92,9 @@ fn add_editor_history(editor: &mut Editor<(), DefaultHistory>, command: &str) {
 
 fn save_editor_history(editor: &mut Editor<(), DefaultHistory>) {
     let history_path = config::get_history_path();
+    if !history_path.parent().unwrap().exists() {
+        std::fs::create_dir_all(&history_path.parent().unwrap()).unwrap();
+    }
     let result = editor.save_history(history_path.as_os_str());
     if let Err(err) = result {
         println!("保存历史失败[{}]: {}", history_path.display(), err);

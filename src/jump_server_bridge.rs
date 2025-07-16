@@ -76,7 +76,7 @@ impl<'a> JumpServerBridge<'a> {
             return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, "无效的 IP 地址")));
         }
         let socket = SocketAddrV4::new(Ipv4Addr::new(host_split[0], host_split[1], host_split[2], host_split[3]), server.port);
-        let tcp = TcpStream::connect_timeout(&SocketAddr::V4(socket), Duration::from_secs(10)).map_err(|e| format!("连接失败: {}", e))?;
+        let tcp = TcpStream::connect_timeout(&SocketAddr::V4(socket), Duration::from_secs(20)).map_err(|e| format!("连接失败: {}", e))?;
         let mut sess = Session::new().map_err(|e| format!("创建 session 失败: {}", e))?;
         sess.set_tcp_stream(tcp);
         sess.set_timeout(1000 * 10);
@@ -118,6 +118,8 @@ impl<'a> JumpServerBridge<'a> {
 
         // 等待登录目标主机
         let _ = Self::wait_for_prompt(&mut channel, vec!(PROMPT_MARK.to_string()), 10)?;
+        // 读取时不会阻塞
+        sess.set_blocking(false);
         self.channel = Some(channel);
         self.success = true;
         println!("===连接成功: {} -> {}", server.host, self.node);
@@ -171,7 +173,10 @@ impl<'a> JumpServerBridge<'a> {
                         }
                     }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(300));
+                    continue
+                },
                 Err(e) => return Err(Box::new(e)),
             }
         }

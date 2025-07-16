@@ -29,6 +29,7 @@ mkdir -p "$OUT_DIR"
 
 echo "🚀 构建 $APP_NAME version $VERSION"
 
+# rustc --print target-list
 # 解析 JSON 并遍历 targets
 COUNT=$(jq '.targets | length' "$BUILD_MATRIX_FILE")
 for ((i = 0; i < COUNT; i++)); do
@@ -37,7 +38,7 @@ for ((i = 0; i < COUNT; i++)); do
 
     echo "🔧 构建 $TARGET ..."
 
-    if [[ "$TARGET" == "aarch64-apple-darwin" && "$OSTYPE" != "darwin"* ]]; then
+    if [[ "$TARGET" == *"-apple-darwin" && "$OSTYPE" != "darwin"* ]]; then
             echo "⚠️  macOS 的构建必须在macOs的机器上. 跳过."
             continue
         fi

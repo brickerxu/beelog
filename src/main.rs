@@ -6,6 +6,7 @@ use rustyline::history::DefaultHistory;
 use rustyline::{DefaultEditor, Editor, Result};
 use std::collections::HashMap;
 use std::process::exit;
+use std::sync::{Arc, Mutex};
 
 const QUIT : &str = "quit";
 
@@ -42,13 +43,14 @@ async fn main() {
             }
         }
     }
-    
+
+    let bridges: Vec<Arc<Mutex<JumpServerBridge>>> = bridges.into_iter().map(|b| Arc::new(Mutex::new(b))).collect();
     if !errors.is_empty() {
         for (node, error) in errors {
             println!("{} > 连接失败: {}", node, error);
         }
         // 断开已连接的资源
-        close_bridges(&mut bridges);
+        close_bridges(bridges);
         exit(1);
     }
     
@@ -65,15 +67,31 @@ async fn main() {
                 }
                 // 将命令加入历史
                 add_editor_history(&mut editor, command);
-                for b in &mut bridges {
-                    let res = b.exec(command);
-                    match res {
-                        Ok((node, output)) => {
+
+                let mut tasks = Vec::new();
+                for b in &bridges {
+                    let b = Arc::clone(b);
+                    let command = command.to_string();
+                    let task = tokio::task::spawn_blocking(move || {
+                        let mut bridge = b.lock().unwrap();
+                        bridge.exec(&command)
+                    });
+                    tasks.push(task);
+                }
+
+                let results = futures::future::join_all(tasks).await;
+
+                for result in results {
+                    match result {
+                        Ok(Ok((node, output))) => {
                             println!("======{}=======", node);
                             println!("{}", output);
-                        },
+                        }
+                        Ok(Err(e)) => {
+                            println!("执行命令错误: {}", e);
+                        }
                         Err(e) => {
-                            println!("{} > 执行命令错误: {}", &b.node, e);
+                            println!("任务失败: {}", e);
                         }
                     }
                 }
@@ -92,16 +110,17 @@ async fn main() {
             }
         }
     }
-    close_bridges(&mut bridges);
+    close_bridges(bridges);
     save_editor_history(&mut editor);
 }
 
-fn close_bridges(bridges: &mut Vec<JumpServerBridge>) {
+fn close_bridges(bridges: Vec<Arc<Mutex<JumpServerBridge>>>) {
     for b in bridges {
-        if b.is_ok() {
-            let res = b.close();
+        let mut bridge = b.lock().unwrap();
+        if bridge.is_ok() {
+            let res = bridge.close();
             if let Err(err) = res {
-                println!("{} > 关闭失败: {}", b.node, err);
+                println!("{} > 关闭失败: {}", bridge.node, err);
             }
         }
     }

@@ -4,6 +4,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use std::io::{Write, Read};
 use std::string::ToString;
+use anyhow::{Result, Error, anyhow};
 use super::config::ServerInfo;
 use super::mfa;
 
@@ -48,100 +49,92 @@ impl KeyboardInteractivePrompt for MfaKeyboardPrompt {
 }
 
 /// jumpserver连接结构体
-pub struct JumpServerBridge<'a> {
-    pub jump_server: &'a ServerInfo,
+pub struct JumpServerBridge {
+    server_info: ServerInfo,
     pub node: String,
-    channel: Option<Channel>,
+    channel: Channel,
     success: bool,
 }
 
 /// jumpserver连接实现
-impl<'a> JumpServerBridge<'a> {
-    pub fn new(jump_server: &'a ServerInfo, node: String) -> Self {
-        JumpServerBridge {
-            jump_server, node,
-            channel: None,
-            success: false,
-        }
-    }
+impl JumpServerBridge {
 
     /// 建立连接
-    pub fn create_bridge(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let server = self.jump_server;
-        println!("===开始连接: {} -> {}", server.host, self.node);
-        let host_split: Vec<u8> = server.host.split(".")
-            .map(|e| {e.parse().expect(&format!("Host转换错误: {} - {}", server.host, e))})
+    pub fn create_bridge(server_info: ServerInfo, node: String) -> Result<Self, Error> {
+        println!("===开始连接: {} -> {}", server_info.host, node);
+        let host_split: Vec<u8> = server_info.host.split(".")
+            .map(|e| {e.parse().expect(&format!("Host转换错误: {} - {}", server_info.host, e))})
             .collect();
         if host_split.len() != 4 {
-            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, "无效的 IP 地址")));
+            return Err(anyhow!("无效的 IP 地址"));
         }
-        let socket = SocketAddrV4::new(Ipv4Addr::new(host_split[0], host_split[1], host_split[2], host_split[3]), server.port);
-        let tcp = TcpStream::connect_timeout(&SocketAddr::V4(socket), Duration::from_secs(20)).map_err(|e| format!("连接失败: {}", e))?;
-        let mut sess = Session::new().map_err(|e| format!("创建 session 失败: {}", e))?;
+        let socket = SocketAddrV4::new(Ipv4Addr::new(host_split[0], host_split[1], host_split[2], host_split[3]), server_info.port);
+        let tcp = TcpStream::connect_timeout(&SocketAddr::V4(socket), Duration::from_secs(20)).map_err(|e| anyhow!(format!("连接失败: {}", e)))?;
+        let mut sess = Session::new().map_err(|e| anyhow!(format!("创建 session 失败: {}", e)))?;
         sess.set_tcp_stream(tcp);
         sess.set_timeout(1000 * 10);
-        sess.handshake().map_err(|e| format!("握手失败: {}", e))?;
+        sess.handshake().map_err(|e| anyhow!(format!("握手失败: {}", e)))?;
 
-        let pri_key_path = Path::new(&server.key_path);
-        let auth_pubkey_res = sess.userauth_pubkey_file(&server.user, None, pri_key_path, None);
+        let pri_key_path = Path::new(&server_info.key_path);
+        let auth_pubkey_res = sess.userauth_pubkey_file(&server_info.user, None, pri_key_path, None);
         if let Err(e) = auth_pubkey_res {
-            if let Some(secret_code) = &server.secret_code {
+            if let Some(secret_code) = &server_info.secret_code {
                 let mut prompt = MfaKeyboardPrompt::new(secret_code);
-                let auth_keyboard_res = sess.userauth_keyboard_interactive(&server.user, &mut prompt);
+                let auth_keyboard_res = sess.userauth_keyboard_interactive(&server_info.user, &mut prompt);
                 if let Err(e) = auth_keyboard_res {
-                    return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("二次认证失败: {}", e))));
+                    return Err(anyhow!(format!("二次认证失败: {}", e)));
                 }
             } else {
-                return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("证书认证失败: {}", e))));
+                return Err(anyhow!(format!("证书认证失败: {}", e)));
             }
         } 
 
         if !sess.authenticated() {
-            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "认证失败")));
+            return Err(anyhow!("认证失败"));
         }
 
-        let mut channel = sess.channel_session().map_err(|e| format!("创建 channel 失败: {}", e))?;
-        channel.request_pty("xterm", None, None).map_err(|e| format!("PTY 请求失败: {}", e))?;
-        channel.shell().map_err(|e| format!("打开 shell 失败: {}", e))?; // 👈 开启 shell 模式
+        let mut channel = sess.channel_session().map_err(|e| anyhow!(format!("创建 channel 失败: {}", e)))?;
+        channel.request_pty("xterm", None, None).map_err(|e| anyhow!(format!("PTY 请求失败: {}", e)))?;
+        // 开启 shell 模式
+        channel.shell().map_err(|e| anyhow!(format!("打开 shell 失败: {}", e)))?;
 
         let (m, prompt, _) = Self::wait_for_prompt(&mut channel, vec!(JUMP_SERVER_MARK.to_string()), 10)?;
         if m {
             if prompt != JUMP_SERVER_MARK  {
-                return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "未能正确连接")));
+                return Err(anyhow!("未能正确连接"));
             }
         } else {
-            return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "未能正确连接")));
+            return Err(anyhow!("未能正确连接"));
         }
 
         // 输入节点 IP 或主机名
-        Self::send_line(&mut channel, &self.node)?;
+        Self::send_line(&mut channel, node.as_str())?;
 
         // 等待登录目标主机
         let _ = Self::wait_for_prompt(&mut channel, vec!(PROMPT_MARK.to_string()), 10)?;
         // 读取时不会阻塞
-        sess.set_blocking(false);
-        self.channel = Some(channel);
-        self.success = true;
-        println!("===连接成功: {} -> {}", server.host, self.node);
-        Ok(())
+        // sess.set_blocking(false);
+        println!("===连接成功: {} -> {}", server_info.host, node);
+        Ok(JumpServerBridge {
+            server_info,
+            node,
+            channel,
+            success: true,
+        })
     }
 
     /// 命令执行
-    pub fn exec(&mut self, command: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
-        if let Some(channel) = self.channel.as_mut() {
-            Self::send_line(channel, command)?;
-            // 等待登录目标主机
-            let (_, _, output) = Self::wait_for_prompt(channel, vec!(self.node.to_string()), 60 * 20)?;
-            Ok((self.node.clone(), output))
-        } else {
-            Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "未建立 SSH 通道")))
-        }
+    pub fn exec(&mut self, command: &str) -> Result<(String, String), Error> {
+        Self::send_line(&mut self.channel, command)?;
+        // 等待登录目标主机
+        let (_, _, output) = Self::wait_for_prompt(&mut self.channel, vec!(self.node.to_string()), 60 * 20)?;
+        Ok((self.node.clone(), output))
     }
 
     /// 关闭连接
-    pub fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let server = self.jump_server;
-        let channel = self.channel.as_mut().unwrap();
+    pub fn close(&mut self) -> Result<(), Error> {
+        let server = &mut self.server_info;
+        let channel = &mut self.channel;
         channel.send_eof()?;
         channel.wait_eof()?;
         channel.close()?;
@@ -153,7 +146,7 @@ impl<'a> JumpServerBridge<'a> {
     /**
      * 等待输出
      */
-    fn wait_for_prompt(channel: &mut Channel, prompts: Vec<String>, timeout_secs: u64) -> Result<(bool, String, String), Box<dyn std::error::Error>> {
+    fn wait_for_prompt(channel: &mut Channel, prompts: Vec<String>, timeout_secs: u64) -> Result<(bool, String, String), Error> {
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         let mut prompt_match = false;
         let mut match_prompt = String::new();
@@ -177,16 +170,16 @@ impl<'a> JumpServerBridge<'a> {
                     std::thread::sleep(Duration::from_millis(300));
                     continue
                 },
-                Err(e) => return Err(Box::new(e)),
+                Err(e) => return Err(anyhow!(e)),
             }
         }
         Ok((prompt_match, match_prompt, content.to_string()))
     }
 
-    fn send_line(channel: &mut Channel, input: &str) -> Result<(), String> {
+    fn send_line(channel: &mut Channel, input: &str) -> Result<(), Error> {
         channel.write_all(format!("{}\r", input).as_bytes())
-            .map_err(|e| format!("写入失败: {}", e))?;
-        channel.flush().map_err(|e| format!("flush失败: {}", e))
+            .map_err(|e| anyhow!(format!("写入失败: {}", e)))?;
+        channel.flush().map_err(|e| anyhow!(format!("flush失败: {}", e)))
     }
     
     pub fn is_ok(&self) -> bool {

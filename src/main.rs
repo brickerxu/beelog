@@ -1,14 +1,16 @@
-use std::process::exit;
-use rustyline::error::ReadlineError;
-use rustyline::{DefaultEditor, Editor, Result};
-use rustyline::history::DefaultHistory;
-use beelog::config;
 use beelog::args;
+use beelog::config;
 use beelog::jump_server_bridge::JumpServerBridge;
+use rustyline::error::ReadlineError;
+use rustyline::history::DefaultHistory;
+use rustyline::{DefaultEditor, Editor, Result};
+use std::collections::HashMap;
+use std::process::exit;
 
 const QUIT : &str = "quit";
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = args::init();
     // 读取配置
     let server_res = config::read_server_config(&args);
@@ -18,16 +20,38 @@ fn main() {
     }
     let (server_info, nodes) = server_res.unwrap();
     
-    let mut bridges = Vec::new();
+    let mut handles = Vec::new();
     for node in nodes {
-        let mut bridge = JumpServerBridge::new(&server_info, node.to_string());
-        if let Err(e) = bridge.create_bridge() {
-            println!("{} > 连接失败: {}", node, e);
-            close_bridges(&mut bridges);
-            exit(1);
-        }
-        bridges.push(bridge);
+        let server_info_clone = server_info.clone();
+        let handle = tokio::task::spawn_blocking(move || {
+            let result = JumpServerBridge::create_bridge(server_info_clone, node.clone());
+            (node, result)
+        });
+        handles.push(handle);
     }
+    let results = futures::future::try_join_all(handles).await.unwrap();
+    let mut bridges = Vec::new();
+    let mut errors = HashMap::new();
+    for (node, result) in results {
+        match result {
+            Ok(bridge) => {
+                bridges.push(bridge);
+            }
+            Err(e) => {
+                errors.insert(node, e);
+            }
+        }
+    }
+    
+    if !errors.is_empty() {
+        for (node, error) in errors {
+            println!("{} > 连接失败: {}", node, error);
+        }
+        // 断开已连接的资源
+        close_bridges(&mut bridges);
+        exit(1);
+    }
+    
     let mut editor = get_editor().unwrap();
     loop {
         let readline = editor.readline(">> ");

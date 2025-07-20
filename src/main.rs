@@ -1,12 +1,10 @@
 use beelog::args;
 use beelog::config;
-use beelog::jump_server_bridge::JumpServerBridge;
+use beelog::jump_server_helper;
 use rustyline::error::ReadlineError;
 use rustyline::history::DefaultHistory;
 use rustyline::{DefaultEditor, Editor, Result};
-use std::collections::HashMap;
 use std::process::exit;
-use std::sync::{Arc, Mutex};
 
 const QUIT : &str = "quit";
 
@@ -21,38 +19,7 @@ async fn main() {
     }
     let (server_info, nodes) = server_res.unwrap();
     
-    let mut handles = Vec::new();
-    for node in nodes {
-        let server_info_clone = server_info.clone();
-        let handle = tokio::task::spawn_blocking(move || {
-            let result = JumpServerBridge::create_bridge(server_info_clone, node.clone());
-            (node, result)
-        });
-        handles.push(handle);
-    }
-    let results = futures::future::try_join_all(handles).await.unwrap();
-    let mut bridges = Vec::new();
-    let mut errors = HashMap::new();
-    for (node, result) in results {
-        match result {
-            Ok(bridge) => {
-                bridges.push(bridge);
-            }
-            Err(e) => {
-                errors.insert(node, e);
-            }
-        }
-    }
-
-    let bridges: Vec<Arc<Mutex<JumpServerBridge>>> = bridges.into_iter().map(|b| Arc::new(Mutex::new(b))).collect();
-    if !errors.is_empty() {
-        for (node, error) in errors {
-            println!("{} > 连接失败: {}", node, error);
-        }
-        // 断开已连接的资源
-        close_bridges(bridges);
-        exit(1);
-    }
+    let mut helper = jump_server_helper::Helper::connect(server_info, nodes).await;
     
     let mut editor = get_editor().unwrap();
     loop {
@@ -67,34 +34,8 @@ async fn main() {
                 }
                 // 将命令加入历史
                 add_editor_history(&mut editor, command);
-
-                let mut tasks = Vec::new();
-                for b in &bridges {
-                    let b = Arc::clone(b);
-                    let command = command.to_string();
-                    let task = tokio::task::spawn_blocking(move || {
-                        let mut bridge = b.lock().unwrap();
-                        bridge.exec(&command)
-                    });
-                    tasks.push(task);
-                }
-
-                let results = futures::future::join_all(tasks).await;
-
-                for result in results {
-                    match result {
-                        Ok(Ok((node, output))) => {
-                            println!("======{}=======", node);
-                            println!("{}", output);
-                        }
-                        Ok(Err(e)) => {
-                            println!("执行命令错误: {}", e);
-                        }
-                        Err(e) => {
-                            println!("任务失败: {}", e);
-                        }
-                    }
-                }
+                
+                helper.exec(command).await;
             },
             Err(ReadlineError::Interrupted) => {
                 println!("CTRL-C");
@@ -110,20 +51,8 @@ async fn main() {
             }
         }
     }
-    close_bridges(bridges);
+    helper.close();
     save_editor_history(&mut editor);
-}
-
-fn close_bridges(bridges: Vec<Arc<Mutex<JumpServerBridge>>>) {
-    for b in bridges {
-        let mut bridge = b.lock().unwrap();
-        if bridge.is_ok() {
-            let res = bridge.close();
-            if let Err(err) = res {
-                println!("{} > 关闭失败: {}", bridge.node, err);
-            }
-        }
-    }
 }
 
 fn get_editor() -> Result<Editor<(), DefaultHistory>> {

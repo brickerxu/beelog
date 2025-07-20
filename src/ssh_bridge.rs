@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use std::io::{Write, Read};
 use std::string::ToString;
 use anyhow::{Result, Error, anyhow};
-use super::config::ServerInfo;
-use super::mfa;
+use crate::config::ServerInfo;
+use crate::mfa;
 
 
 const JUMP_SERVER_MARK : &str = "Opt>";
@@ -48,16 +48,16 @@ impl KeyboardInteractivePrompt for MfaKeyboardPrompt {
     }
 }
 
-/// jumpserver连接结构体
-pub struct JumpServerBridge {
+/// ssh连接结构体
+pub struct SshBridge {
     server_info: ServerInfo,
     pub node: String,
     channel: Channel,
     success: bool,
 }
 
-/// jumpserver连接实现
-impl JumpServerBridge {
+/// ssh连接实现
+impl SshBridge {
 
     /// 建立连接
     pub fn create_bridge(server_info: ServerInfo, node: String) -> Result<Self, Error> {
@@ -115,7 +115,7 @@ impl JumpServerBridge {
         // 读取时不会阻塞
         // sess.set_blocking(false);
         println!("===连接成功: {} -> {}", server_info.host, node);
-        Ok(JumpServerBridge {
+        Ok(SshBridge {
             server_info,
             node,
             channel,
@@ -125,9 +125,11 @@ impl JumpServerBridge {
 
     /// 命令执行
     pub fn exec(&mut self, command: &str) -> Result<(String, String), Error> {
+        // println!("开始执行: {}", self.node);
         Self::send_line(&mut self.channel, command)?;
         // 等待登录目标主机
         let (_, _, output) = Self::wait_for_prompt(&mut self.channel, vec!(self.node.to_string()), 60 * 20)?;
+        // println!("结束执行: {}", self.node);
         Ok((self.node.clone(), output))
     }
 

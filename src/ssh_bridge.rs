@@ -51,7 +51,6 @@ impl KeyboardInteractivePrompt for MfaKeyboardPrompt {
 /// ssh连接结构体
 pub struct SshBridge {
     server_info: ServerInfo,
-    pub node: String,
     channel: Channel,
     success: bool,
 }
@@ -60,8 +59,8 @@ pub struct SshBridge {
 impl SshBridge {
 
     /// 建立连接
-    pub fn create_bridge(server_info: ServerInfo, node: String) -> Result<Self, Error> {
-        println!("===开始连接: {} -> {}", server_info.host, node);
+    pub fn create_bridge(server_info: ServerInfo) -> Result<Self, Error> {
+        println!("===开始连接: {}", server_info.host);
         let host_split: Vec<u8> = server_info.host.split(".")
             .map(|e| {e.parse().expect(&format!("Host转换错误: {} - {}", server_info.host, e))})
             .collect();
@@ -107,30 +106,29 @@ impl SshBridge {
             return Err(anyhow!("未能正确连接"));
         }
 
-        // 输入节点 IP 或主机名
-        Self::send_line(&mut channel, node.as_str())?;
-
-        // 等待登录目标主机
-        let _ = Self::wait_for_prompt(&mut channel, vec!(PROMPT_MARK.to_string()), 10)?;
+        // // 输入节点 IP 或主机名
+        // Self::send_line(&mut channel, node.as_str())?;
+        // 
+        // // 等待登录目标主机
+        // let _ = Self::wait_for_prompt(&mut channel, vec!(PROMPT_MARK.to_string()), 10)?;
         // 读取时不会阻塞
         // sess.set_blocking(false);
-        println!("===连接成功: {} -> {}", server_info.host, node);
+        println!("===连接成功: {}", server_info.host);
         Ok(SshBridge {
             server_info,
-            node,
             channel,
             success: true,
         })
     }
 
     /// 命令执行
-    pub fn exec(&mut self, command: &str) -> Result<(String, String), Error> {
+    pub fn exec(&mut self, command: &str, prompts: Vec<String>) -> Result<String, Error> {
         // println!("开始执行: {}", self.node);
         Self::send_line(&mut self.channel, command)?;
         // 等待登录目标主机
-        let (_, _, output) = Self::wait_for_prompt(&mut self.channel, vec!(self.node.to_string()), 60 * 20)?;
+        let (_, _, output) = Self::wait_for_prompt(&mut self.channel, prompts, 60 * 20)?;
         // println!("结束执行: {}", self.node);
-        Ok((self.node.clone(), output))
+        Ok(output)
     }
 
     /// 关闭连接
@@ -141,7 +139,7 @@ impl SshBridge {
         channel.wait_eof()?;
         channel.close()?;
         channel.wait_close()?;
-        println!("===断开连接: {} -> {}", server.host, self.node);
+        println!("===断开连接: {}", server.host);
         Ok(())
     }
 

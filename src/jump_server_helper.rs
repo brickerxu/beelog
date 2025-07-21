@@ -5,7 +5,12 @@ use crate::config::ServerInfo;
 use crate::ssh_bridge::*;
 
 pub struct Helper {
-    ssh_bridges: Vec<Arc<Mutex<SshBridge>>>,
+    jump_server_bridges: Vec<JumpServerBridge>,
+}
+
+struct JumpServerBridge {
+    ssh_bridge: Arc<Mutex<SshBridge>>,
+    node: String,
 }
 
 impl Helper {
@@ -14,18 +19,25 @@ impl Helper {
         for node in nodes {
             let server_info_clone = server_info.clone();
             let handle = tokio::task::spawn_blocking(move || {
-                let result = SshBridge::create_bridge(server_info_clone, node.clone());
+                let mut result = SshBridge::create_bridge(server_info_clone);
+                if let Ok(ref mut ssh_bridge) = result {
+                    ssh_bridge.exec(node.as_str(), vec![node.clone()]);
+                }
                 (node, result)
             });
             handles.push(handle);
         }
         let results = futures::future::try_join_all(handles).await.unwrap();
-        let mut bridges = Vec::new();
+        let mut jump_server_bridges = Vec::new();
         let mut errors = HashMap::new();
         for (node, result) in results {
             match result {
-                Ok(bridge) => {
-                    bridges.push(Arc::new(Mutex::new(bridge)));
+                Ok(ssh_bridge) => {
+                    let jump_server = JumpServerBridge {
+                        ssh_bridge: Arc::new(Mutex::new(ssh_bridge)),
+                        node,
+                    };
+                    jump_server_bridges.push(jump_server);
                 }
                 Err(e) => {
                     errors.insert(node, e);
@@ -33,7 +45,7 @@ impl Helper {
             }
         }
         let mut helper = Self {
-            ssh_bridges: bridges,
+            jump_server_bridges,
         };
         if !errors.is_empty() {
             for (node, error) in errors {
@@ -45,44 +57,42 @@ impl Helper {
         }
         helper
     }
-    
+
     pub async fn exec(&mut self, command: &str) {
         let mut tasks = Vec::new();
-        for b in &self.ssh_bridges {
-            let b = Arc::clone(b);
+        for jsb in &self.jump_server_bridges {
+            let ssh_bridge = Arc::clone(&jsb.ssh_bridge);
+            let node = jsb.node.clone();
             let command = command.to_string();
             let task = tokio::task::spawn_blocking(move || {
-                let mut bridge = b.lock().unwrap();
-                bridge.exec(&command)
+                let mut bridge = ssh_bridge.lock().unwrap();
+                bridge.exec(&command, vec![node])
             });
             tasks.push(task);
         }
 
-        let results = futures::future::join_all(tasks).await;
+        let results = futures::future::try_join_all(tasks).await.unwrap();
 
         for result in results {
             match result {
-                Ok(Ok((node, output))) => {
+                Ok(output) => {
                     // println!("======{}=======", node);
                     println!("{}", output);
                 }
-                Ok(Err(e)) => {
-                    println!("执行命令错误: {}", e);
-                }
                 Err(e) => {
-                    println!("任务失败: {}", e);
+                    println!("执行命令错误: {}", e);
                 }
             }
         }
     }
-    
+
     pub fn close(&mut self) {
-        for b in &self.ssh_bridges {
-            let mut bridge = b.lock().unwrap();
+        for jsb in &self.jump_server_bridges {
+            let mut bridge = jsb.ssh_bridge.lock().unwrap();
             if bridge.is_ok() {
                 let res = bridge.close();
                 if let Err(err) = res {
-                    println!("{} > 关闭失败: {}", bridge.node, err);
+                    println!("{} > 关闭失败: {}", jsb.node, err);
                 }
             }
         }

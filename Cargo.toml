@@ -27,3 +27,4 @@ rustyline = "16.0.0"
 anyhow = "1.0.98"
 tokio = { version = "1.46.1", features = ["full"] }
 futures = "0.3.31"
+indicatif = "0.18.0"

@@ -9,9 +9,7 @@ use crate::config::ServerInfo;
 use crate::mfa;
 
 
-const JUMP_SERVER_MARK : &str = "Opt>";
 const MFA_MARK : &str = "OTP Code";
-const PROMPT_MARK : &str = "$";
 
 /// MFA交互结构
 struct MfaKeyboardPrompt {
@@ -50,17 +48,15 @@ impl KeyboardInteractivePrompt for MfaKeyboardPrompt {
 
 /// ssh连接结构体
 pub struct SshBridge {
-    server_info: ServerInfo,
+    session: Session,
     channel: Channel,
-    success: bool,
 }
 
 /// ssh连接实现
 impl SshBridge {
 
     /// 建立连接
-    pub fn create_bridge(server_info: ServerInfo) -> Result<Self, Error> {
-        println!("===开始连接: {}", server_info.host);
+    pub fn create_bridge(server_info: ServerInfo, prompts: &str) -> Result<Self, Error> {
         let host_split: Vec<u8> = server_info.host.split(".")
             .map(|e| {e.parse().expect(&format!("Host转换错误: {} - {}", server_info.host, e))})
             .collect();
@@ -97,49 +93,38 @@ impl SshBridge {
         // 开启 shell 模式
         channel.shell().map_err(|e| anyhow!(format!("打开 shell 失败: {}", e)))?;
 
-        let (m, prompt, _) = Self::wait_for_prompt(&mut channel, vec!(JUMP_SERVER_MARK.to_string()), 10)?;
+        let (m, prompt, _) = Self::wait_for_prompt(&mut channel, vec!(prompts.to_string()), 10)?;
         if m {
-            if prompt != JUMP_SERVER_MARK  {
+            if prompt != prompts  {
                 return Err(anyhow!("未能正确连接"));
             }
         } else {
             return Err(anyhow!("未能正确连接"));
         }
-
-        // // 输入节点 IP 或主机名
-        // Self::send_line(&mut channel, node.as_str())?;
-        // 
-        // // 等待登录目标主机
-        // let _ = Self::wait_for_prompt(&mut channel, vec!(PROMPT_MARK.to_string()), 10)?;
         // 读取时不会阻塞
         // sess.set_blocking(false);
-        println!("===连接成功: {}", server_info.host);
         Ok(SshBridge {
-            server_info,
+            session: sess,
             channel,
-            success: true,
         })
     }
 
     /// 命令执行
     pub fn exec(&mut self, command: &str, prompts: Vec<String>) -> Result<String, Error> {
-        // println!("开始执行: {}", self.node);
         Self::send_line(&mut self.channel, command)?;
         // 等待登录目标主机
         let (_, _, output) = Self::wait_for_prompt(&mut self.channel, prompts, 60 * 20)?;
-        // println!("结束执行: {}", self.node);
         Ok(output)
     }
 
     /// 关闭连接
     pub fn close(&mut self) -> Result<(), Error> {
-        let server = &mut self.server_info;
         let channel = &mut self.channel;
         channel.send_eof()?;
         channel.wait_eof()?;
         channel.close()?;
         channel.wait_close()?;
-        println!("===断开连接: {}", server.host);
+        self.session.disconnect(None, "Close", None)?;
         Ok(())
     }
 
@@ -180,9 +165,5 @@ impl SshBridge {
         channel.write_all(format!("{}\r", input).as_bytes())
             .map_err(|e| anyhow!(format!("写入失败: {}", e)))?;
         channel.flush().map_err(|e| anyhow!(format!("flush失败: {}", e)))
-    }
-    
-    pub fn is_ok(&self) -> bool {
-        self.success
     }
 }

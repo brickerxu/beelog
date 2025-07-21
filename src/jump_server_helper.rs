@@ -4,6 +4,9 @@ use std::sync::{Arc, Mutex};
 use crate::config::ServerInfo;
 use crate::ssh_bridge::*;
 
+
+const JUMP_SERVER_MARK : &str = "Opt>";
+
 pub struct Helper {
     jump_server_bridges: Vec<JumpServerBridge>,
 }
@@ -19,9 +22,9 @@ impl Helper {
         for node in nodes {
             let server_info_clone = server_info.clone();
             let handle = tokio::task::spawn_blocking(move || {
-                let mut result = SshBridge::create_bridge(server_info_clone);
+                let mut result = SshBridge::create_bridge(server_info_clone, JUMP_SERVER_MARK);
                 if let Ok(ref mut ssh_bridge) = result {
-                    ssh_bridge.exec(node.as_str(), vec![node.clone()]);
+                    let _ = ssh_bridge.exec(node.as_str(), vec![node.clone()]);
                 }
                 (node, result)
             });
@@ -89,12 +92,11 @@ impl Helper {
     pub fn close(&mut self) {
         for jsb in &self.jump_server_bridges {
             let mut bridge = jsb.ssh_bridge.lock().unwrap();
-            if bridge.is_ok() {
-                let res = bridge.close();
-                if let Err(err) = res {
-                    println!("{} > 关闭失败: {}", jsb.node, err);
-                }
-            }
+            println!("===关闭连接: {}", jsb.node);
+            let res = bridge.close();
+            if let Err(err) = res {
+                println!("{} > 关闭失败: {}", jsb.node, err);
+            }   
         }
     }
 }

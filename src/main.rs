@@ -1,10 +1,10 @@
 use beelog::args;
 use beelog::config;
 use beelog::jump_server_helper;
-use rustyline::error::ReadlineError;
-use rustyline::history::DefaultHistory;
-use rustyline::{DefaultEditor, Editor, Result};
+use reedline::Signal;
 use std::process::exit;
+
+mod cli_line;
 
 const QUIT : &str = "quit";
 
@@ -17,69 +17,33 @@ async fn main() {
         println!("读取配置异常: {}", err);
         exit(1);
     }
-    let (server_info, nodes) = server_res.unwrap();
-    
+    let (server_info, node_group) = server_res.unwrap();
+    let nodes = node_group.nodes;
     let mut helper = jump_server_helper::Helper::connect(server_info, nodes).await;
     
-    let mut editor = get_editor().unwrap();
+    let cli = cli_line::CliLine::new(&node_group.group);
+    let mut line_editor = cli.line_editor;
+    let prompt = cli.prompt;
+
     loop {
-        let readline = editor.readline(">> ");
-        match readline {
-            Ok(line) => {
+        let sig = line_editor.read_line(&prompt);
+        match sig {
+            Ok(Signal::Success(line)) => {
                 let command = line.trim();
                 if "".eq(command) {
                     continue;
                 } else if QUIT.eq(command) {
                     break;
                 }
-                // 将命令加入历史
-                add_editor_history(&mut editor, command);
-                
                 helper.exec(command).await;
-            },
-            Err(ReadlineError::Interrupted) => {
-                println!("CTRL-C");
-                break
-            },
-            Err(ReadlineError::Eof) => {
-                println!("CTRL-D");
-                break
-            },
-            Err(err) => {
-                println!("输入错误: {:?}", err);
-                break
+            }
+            Ok(Signal::CtrlD) | Ok(Signal::CtrlC) => {
+                break;
+            }
+            x => {
+                println!("Event: {:?}", x);
             }
         }
     }
     helper.close();
-    save_editor_history(&mut editor);
-}
-
-fn get_editor() -> Result<Editor<(), DefaultHistory>> {
-    let mut editor = DefaultEditor::new().expect("新建输入组件异常");
-    let history_path = config::get_history_path();
-    if history_path.exists() {
-        if editor.load_history(history_path.as_os_str()).is_err() {
-            println!("加载历史记录异常");
-        }
-    }
-    Ok(editor)
-}
-
-fn add_editor_history(editor: &mut Editor<(), DefaultHistory>, command: &str) {
-    let result = editor.add_history_entry(command);
-    if let Err(_) = result {
-        
-    }
-}
-
-fn save_editor_history(editor: &mut Editor<(), DefaultHistory>) {
-    let history_path = config::get_history_path();
-    if !history_path.parent().unwrap().exists() {
-        std::fs::create_dir_all(&history_path.parent().unwrap()).unwrap();
-    }
-    let result = editor.save_history(history_path.as_os_str());
-    if let Err(err) = result {
-        println!("保存历史失败[{}]: {}", history_path.display(), err);
-    }
 }

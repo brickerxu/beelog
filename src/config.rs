@@ -56,7 +56,7 @@ pub struct NodeGroup {
  *
  * Error 如果未找到服务器或节点组配置，则返回错误
  */
-pub fn read_server_config(args: &Args) -> Result<(ServerInfo, Vec<String>), Box<dyn std::error::Error>> {
+pub fn read_server_config(args: &Args) -> Result<(ServerInfo, NodeGroup), Box<dyn std::error::Error>> {
     let config = load_config()?;
     let server_config = config.server;
     let arg_server = args.server.as_ref().unwrap_or(&server_config.default_server);
@@ -72,17 +72,17 @@ pub fn read_server_config(args: &Args) -> Result<(ServerInfo, Vec<String>), Box<
         return Err(Error::new(ErrorKind::NotFound, format!("未找到server配置: {}", arg_server)).into())
     }
     let arg_node_group = args.node_group.as_ref().unwrap_or(&server_config.default_node_group);
-    let mut node_groups_opt = None;
+    let mut node_group_opt = None;
     for group in server_config.node_groups {
         if arg_node_group.eq(&group.group) {
-            node_groups_opt = Some(group.nodes);
+            node_group_opt = Some(group);
         }
     }
-    if None == node_groups_opt {
+    if node_group_opt.is_none() {
         return Err(Error::new(ErrorKind::NotFound, format!("未找到node group配置: {}", arg_node_group)).into())
     }
 
-    Ok((server_info_opt.unwrap(), node_groups_opt.unwrap()))
+    Ok((server_info_opt.unwrap(), node_group_opt.unwrap()))
 }
 
 /**

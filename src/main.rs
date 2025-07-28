@@ -20,7 +20,7 @@ async fn main() {
     let (server_info, node_group) = server_res.unwrap();
     let nodes = node_group.nodes;
     let mut helper = jump_server_helper::Helper::connect(server_info, nodes).await;
-    
+
     let cli = cli_line::CliLine::new(&node_group.group);
     let mut line_editor = cli.line_editor;
     let prompt = cli.prompt;
@@ -37,7 +37,10 @@ async fn main() {
                 }
                 helper.exec(command).await;
             }
-            Ok(Signal::CtrlD) | Ok(Signal::CtrlC) => {
+            Ok(Signal::CtrlC) => {
+                let _ = line_editor.clear_scrollback();
+            }
+            Ok(Signal::CtrlD) => {
                 break;
             }
             x => {

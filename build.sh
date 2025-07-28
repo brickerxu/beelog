@@ -25,6 +25,8 @@ if ! command -v cross &> /dev/null; then
     cargo install cross
 fi
 
+rm -rf "$OUT_DIR"
+
 mkdir -p "$OUT_DIR"
 
 echo "🚀 构建 $APP_NAME version $VERSION"

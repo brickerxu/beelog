@@ -1,6 +1,6 @@
 use beelog::config;
 use chrono::Local;
-use reedline::{FileBackedHistory, Prompt, PromptEditMode, PromptHistorySearch, Reedline};
+use reedline::{FileBackedHistory, Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline};
 use std::borrow::Cow;
 
 pub struct CliLine {
@@ -9,7 +9,7 @@ pub struct CliLine {
 }
 
 impl CliLine {
-    
+
     pub fn new(left_prompt: &String) -> Self {
         let history_path = config::get_history_path();
         let history = Box::new(
@@ -33,7 +33,7 @@ pub struct CustomPrompt {
 
 impl CustomPrompt {
     fn new(left_prompt: String) -> Self {
-        
+
         Self {
             left_prompt,
         }
@@ -42,7 +42,7 @@ impl CustomPrompt {
 }
 
 impl Prompt for CustomPrompt {
-    
+
     fn render_prompt_left(&self) -> Cow<str> {
         Cow::Borrowed(&self.left_prompt)
     }
@@ -59,8 +59,15 @@ impl Prompt for CustomPrompt {
         Cow::Borrowed("render_prompt_multiline_indicator")
     }
 
-    fn render_prompt_history_search_indicator(&self, _: PromptHistorySearch) -> Cow<str> {
-        Cow::Borrowed("render_prompt_history_search_indicator")
+    fn render_prompt_history_search_indicator(&self, history_search: PromptHistorySearch) -> Cow<str> {
+        let prefix = match history_search.status {
+            PromptHistorySearchStatus::Passing => "",
+            PromptHistorySearchStatus::Failing => "❌️ ",
+        };
+        Cow::Owned(format!(
+            " ({}搜索: {}) ",
+            prefix, history_search.term
+        ))
     }
     
 }

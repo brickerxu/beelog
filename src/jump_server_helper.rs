@@ -63,7 +63,7 @@ impl Helper {
                 println!("{} > 连接失败: {}", node, error);
             }
             // 断开已连接的资源
-            helper.close();
+            helper.close().await;
             exit(1);
         }
         helper
@@ -99,16 +99,30 @@ impl Helper {
     }
 
     /// 连接关闭
-    pub fn close(&mut self) {
+    pub async fn close(&mut self) {
         let pb = Self::default_progress_bar(self.jump_server_bridges.len() as u64, Some("关闭连接".to_string()));
+        let pb = Arc::new(pb);
+        let mut handles = Vec::new();
         for jsb in &self.jump_server_bridges {
-            let mut bridge = jsb.ssh_bridge.lock().unwrap();
-            pb.inc(1);
-            let res = bridge.close();
-            if let Err(err) = res {
-                println!("{} > 关闭失败: {}", jsb.node, err);
-            }   
+            let pb = pb.clone();
+            let node = jsb.node.clone();
+            let ssh_bridge = Arc::clone(&jsb.ssh_bridge);
+            let handle = tokio::task::spawn_blocking(move || {
+                let mut bridge = ssh_bridge.lock().unwrap();
+                pb.inc(1);
+                let res = bridge.close();
+                (node.clone(), if res.is_ok() {"success".to_string()} else {res.err().unwrap().to_string()})
+            });
+            handles.push(handle);
         }
+        let results = futures::future::try_join_all(handles).await.unwrap();
+
+        for (node, result) in results {
+            if result != "success" {
+                println!("{} > 关闭失败 ", node);
+            }
+        }
+
         pb.finish_with_message("全部关闭!");
     }
     

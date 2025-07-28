@@ -48,5 +48,5 @@ async fn main() {
             }
         }
     }
-    helper.close();
+    helper.close().await;
 }

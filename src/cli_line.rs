@@ -3,6 +3,11 @@ use chrono::Local;
 use reedline::{FileBackedHistory, Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline};
 use std::borrow::Cow;
 
+// 禁止阻塞命令
+/// 不支持的命令
+const BLOCKED_COMMANDS: &[&str] = &["tail", "less", "top", "vi", "watch", "more", "htop", "nano"];
+
+
 pub struct CliLine {
     pub line_editor: Reedline,
     pub prompt: CustomPrompt,
@@ -70,6 +75,10 @@ impl Prompt for CustomPrompt {
         ))
     }
     
+}
+
+pub fn is_command_blocked(cmd: &str) -> bool {
+    BLOCKED_COMMANDS.iter().any(|&blocked| cmd.starts_with(blocked))
 }
 
 fn get_now() -> String {

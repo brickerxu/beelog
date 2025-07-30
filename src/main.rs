@@ -34,6 +34,9 @@ async fn main() {
                     continue;
                 } else if QUIT.eq(command) {
                     break;
+                } else if cli_line::is_command_blocked(command) {
+                    println!("⚠️ 命令 `{}` 被禁止执行：可能导致会话阻塞", command);
+                    continue;
                 }
                 helper.exec(command).await;
             }

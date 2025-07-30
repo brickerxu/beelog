@@ -3,6 +3,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use std::io::{Write, Read};
+use std::ops::Not;
 use std::string::ToString;
 use anyhow::{Result, Error, anyhow};
 use encoding_rs::{DecoderResult, UTF_8};
@@ -94,9 +95,9 @@ impl SshBridge {
         // 开启 shell 模式
         channel.shell().map_err(|e| anyhow!(format!("打开 shell 失败: {}", e)))?;
 
-        let (m, prompt, _) = Self::wait_for_prompt(&mut channel, vec!(prompts.to_string()), 10)?;
-        if m {
-            if prompt != prompts  {
+        let (matched_prompt, _) = Self::wait_for_prompt(&mut channel, vec!(prompts.to_string()), 10)?;
+        if matched_prompt.is_empty().not() {
+            if matched_prompt != prompts  {
                 return Err(anyhow!("未能正确连接"));
             }
         } else {
@@ -114,7 +115,7 @@ impl SshBridge {
     pub fn exec(&mut self, command: &str, prompts: Vec<String>) -> Result<String, Error> {
         Self::send_line(&mut self.channel, command)?;
         // 等待登录目标主机
-        let (_, _, output) = Self::wait_for_prompt(&mut self.channel, prompts, 60 * 20)?;
+        let (_, output) = Self::wait_for_prompt(&mut self.channel, prompts, 60 * 20)?;
         Ok(output)
     }
 
@@ -132,10 +133,10 @@ impl SshBridge {
     /**
      * 等待输出
      */
-    fn wait_for_prompt(channel: &mut Channel, prompts: Vec<String>, timeout_secs: u64) -> Result<(bool, String, String), Error> {
+    fn wait_for_prompt(channel: &mut Channel, prompts: Vec<String>, timeout_secs: u64) -> Result<(String, String), Error> {
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-        let mut prompt_match = false;
-        let mut match_prompt = String::new();
+        // 匹配到的关键字
+        let mut matched_prompt = String::new();
         let mut content = String::new();
 
         let mut decoder = UTF_8.new_decoder();
@@ -165,10 +166,8 @@ impl SshBridge {
                     read_buf.drain(..read);
                     
                     for prompt in prompts.iter() {
-                        if current_content.contains(prompt) {
-                            prompt_match = true;
-                            match_prompt = prompt.clone();
                         if decode_buf.contains(prompt) {
+                            matched_prompt = prompt.clone();
                             break 'out_loop;
                         }
                     }
@@ -181,7 +180,7 @@ impl SshBridge {
                 Err(e) => return Err(anyhow!(e)),
             }
         }
-        Ok((prompt_match, match_prompt, content.to_string()))
+        Ok((matched_prompt, content.to_string()))
     }
 
     fn send_line(channel: &mut Channel, input: &str) -> Result<(), Error> {

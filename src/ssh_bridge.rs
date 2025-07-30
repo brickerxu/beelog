@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use std::io::{Write, Read};
 use std::string::ToString;
 use anyhow::{Result, Error, anyhow};
+use encoding_rs::{DecoderResult, UTF_8};
 use crate::config::ServerInfo;
 use crate::mfa;
 
@@ -137,19 +138,41 @@ impl SshBridge {
         let mut match_prompt = String::new();
         let mut content = String::new();
 
+        let mut decoder = UTF_8.new_decoder();
+        let mut raw_buf = [0u8; 1024];
+        let mut read_buf = Vec::new(); // 用于保存残余字节
+        let mut decode_buf = String::with_capacity(2048);
+
         'out_loop: while Instant::now() < deadline {
-            let mut buffer = [0u8; 1024];
-            match channel.read(&mut buffer) {
+            match channel.read(&mut raw_buf) {
                 Ok(n) => {
-                    let current_content = String::from_utf8_lossy(&buffer[..n]);
-                    content.push_str(current_content.to_string().as_str());
+                    if n == 0 {
+                        break;
+                    }
+                    // 追加到字节缓存中
+                    read_buf.extend_from_slice(&raw_buf[..n]);
+
+                    // 使用 decoder 解码
+                    let (decoder_result, read) = decoder.decode_to_string_without_replacement(&read_buf, &mut decode_buf, false);
+                    if decoder_result != DecoderResult::InputEmpty {
+                        eprintln!("⚠️ 解码时发生错误！");
+                    }
+
+                    // 将成功读取的内容加入 content 中
+                    content.push_str(&decode_buf);
+
+                    // 移除已读的字节
+                    read_buf.drain(..read);
+                    
                     for prompt in prompts.iter() {
                         if current_content.contains(prompt) {
                             prompt_match = true;
                             match_prompt = prompt.clone();
+                        if decode_buf.contains(prompt) {
                             break 'out_loop;
                         }
                     }
+                    decode_buf.clear();
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(300));

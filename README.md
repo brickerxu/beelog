@@ -7,6 +7,7 @@
 ```toml
 
 [server]
+# 自定义配置
 default-server = "server-name"
 default-node-group = "group-name"
 
@@ -25,4 +26,9 @@ secret_code = "MFA code"
 # 自定义名称
 group = "group-name"
 nodes = ["node1", "node2"]
+```
+
+## 使用
+```shell
+beelog -s [服务器名称] -n [节点分组名称]
 ```

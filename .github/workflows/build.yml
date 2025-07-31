@@ -1,4 +1,4 @@
-name: Release Build - Beelog
+name: 构建 - Beelog
 
 permissions:
   contents: write
@@ -17,6 +17,10 @@ jobs:
             arch: x64
             target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
           - os: osx
             arch: x64
             target: x86_64-apple-darwin
@@ -33,23 +37,23 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     steps:
-      - name: Checkout code
+      - name: 切换目标代码
         uses: actions/checkout@v3
 
-      - name: Set up Rust
+      - name: 设置Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
 
-      - name: Add Rust Target (if not native)
+      - name: 添加Rust目标平台
         run: rustup target add ${{ matrix.target }}
 
-      - name: Build
+      - name: 构建
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Prepare Binary Folder Structure
+      - name: 准备二进制文件
         run: |
           BIN_NAME=beelog
           TARGET_DIR=target/${{ matrix.target }}/release
@@ -63,13 +67,17 @@ jobs:
           fi
         shell: bash
 
-      - name: Create ZIP Package
+      - name: 压缩包
         run: |
           ZIP_NAME=beelog-${{ matrix.os }}-${{ matrix.arch }}.zip
-          zip -r $ZIP_NAME beelog-${{ matrix.os }}-${{ matrix.arch }}
+          if [[ "${{ matrix.os }}" == "win" ]]; then
+            powershell -Command "Compress-Archive -Path beelog-${{ matrix.os }}-${{ matrix.arch }} -DestinationPath $ZIP_NAME"
+          else
+            zip -r $ZIP_NAME beelog-${{ matrix.os }}-${{ matrix.arch }}
+          fi
         shell: bash
 
-      - name: Upload ZIP to GitHub Release
+      - name: 上传Release
         uses: softprops/action-gh-release@v1
         with:
           files: |

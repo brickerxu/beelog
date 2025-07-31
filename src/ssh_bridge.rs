@@ -60,8 +60,8 @@ impl SshBridge {
     /// 建立连接
     pub fn create_bridge(server_info: ServerInfo, prompts: &str) -> Result<Self, Error> {
         let host_split: Vec<u8> = server_info.host.split(".")
-            .map(|e| {e.parse().expect(&format!("Host转换错误: {} - {}", server_info.host, e))})
-            .collect();
+            .map(|e| {e.parse::<u8>().expect(&format!("Host转换错误: {} - {}", server_info.host, e))})
+            .collect::<Vec<u8>>();
         if host_split.len() != 4 {
             return Err(anyhow!("无效的 IP 地址"));
         }

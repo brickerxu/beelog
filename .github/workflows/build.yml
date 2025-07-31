@@ -1,0 +1,72 @@
+name: Release Build - Beelog
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: x64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - os: osx
+            arch: x64
+            target: x86_64-apple-darwin
+            runner: macos-latest
+          - os: osx
+            arch: aarch64
+            target: aarch64-apple-darwin
+            runner: macos-latest
+          - os: win
+            arch: x64
+            target: x86_64-pc-windows-msvc
+            runner: windows-latest
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Add Rust Target (if not native)
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare Binary Folder Structure
+        run: |
+          BIN_NAME=beelog
+          TARGET_DIR=target/${{ matrix.target }}/release
+          OUT_DIR=beelog-${{ matrix.os }}-${{ matrix.arch }}/bin
+          mkdir -p $OUT_DIR
+
+          if [[ "${{ matrix.os }}" == "win" ]]; then
+            cp "$TARGET_DIR/$BIN_NAME.exe" "$OUT_DIR/$BIN_NAME.exe"
+          else
+            cp "$TARGET_DIR/$BIN_NAME" "$OUT_DIR/$BIN_NAME"
+          fi
+        shell: bash
+
+      - name: Create ZIP Package
+        run: |
+          ZIP_NAME=beelog-${{ matrix.os }}-${{ matrix.arch }}.zip
+          zip -r $ZIP_NAME beelog-${{ matrix.os }}-${{ matrix.arch }}
+        shell: bash
+
+      - name: Upload ZIP to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            beelog-${{ matrix.os }}-${{ matrix.arch }}.zip

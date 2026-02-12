@@ -123,14 +123,14 @@ beelog [web:2]> :quit
 
 ### 输出模式
 
-**stream**（默认）— 实时流式，每行带节点前缀：
+**stream** — 实时流式，每行带节点前缀：
 ```
 [web-1] log line 1
 [web-2] log line 1
 [web-1] log line 2
 ```
 
-**grouped** — 按节点分组展示：
+**grouped**（默认）— 按节点分组展示：
 ```
 === [web-1] ===
 log line 1
@@ -143,9 +143,9 @@ log line 2
 
 **merged** — 按时间戳排序合并：
 ```
-[2024-01-15 10:30:00] [web-1] log line 1
-[2024-01-15 10:30:00] [web-2] log line 1
-[2024-01-15 10:30:01] [web-1] log line 2
+[web-1] log line 1
+[web-2] log line 1
+[web-1] log line 2
 ```
 
 ## 运行测试

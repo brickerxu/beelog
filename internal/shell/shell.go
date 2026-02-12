@@ -250,7 +250,7 @@ func (s *interactiveShell) dispatchExec(ctx context.Context, sessions []executor
 				lines = append(lines, executor.OutputLine{
 					NodeName:  r.NodeName,
 					Content:   line,
-					Timestamp: time.Now(),
+					Timestamp: resolveTimestamp(line),
 					IsError:   r.ExitCode != 0,
 				})
 			}
@@ -299,4 +299,12 @@ func ensureHistoryFile() (string, error) {
 	}
 
 	return expanded, nil
+}
+// resolveTimestamp tries to parse a log timestamp from the line content.
+// Falls back to time.Now() if parsing fails.
+func resolveTimestamp(line string) time.Time {
+	if ts, ok := output.ParseLogTimestamp(line); ok {
+		return ts
+	}
+	return time.Now()
 }

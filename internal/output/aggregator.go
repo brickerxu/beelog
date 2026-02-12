@@ -10,11 +10,15 @@ import (
 )
 
 // outputAggregator 实现 OutputAggregator 接口
-type outputAggregator struct{}
+type outputAggregator struct {
+	colors *ColorPalette
+}
 
 // NewOutputAggregator 创建 OutputAggregator 实例
 func NewOutputAggregator() OutputAggregator {
-	return &outputAggregator{}
+	return &outputAggregator{
+		colors: NewColorPalette(IsColorSupported()),
+	}
 }
 
 // RenderGrouped 按节点分组展示，每个节点输出为连续块，节点间有分隔符
@@ -55,9 +59,8 @@ func (o *outputAggregator) RenderMerged(lines []executor.OutputLine) string {
 
 	var sb strings.Builder
 	for _, line := range sorted {
-		fmt.Fprintf(&sb, "[%s] [%s] %s\n",
-			line.Timestamp.Format(TimestampFormat),
-			line.NodeName,
+		fmt.Fprintf(&sb, "[%s] %s\n",
+			o.colors.Colorize(line.NodeName, line.NodeName),
 			line.Content,
 		)
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/brickerxu/beelog/internal/config"
 	"github.com/brickerxu/beelog/internal/executor"
+	"github.com/brickerxu/beelog/internal/output"
 	"github.com/brickerxu/beelog/internal/totp"
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -388,6 +389,15 @@ func markerOnOwnLine(buf []byte, marker []byte) bool {
 	}
 }
 
+// resolveTimestamp tries to parse a log timestamp from the line content.
+// Falls back to time.Now() if parsing fails.
+func resolveTimestamp(line string) time.Time {
+	if ts, ok := output.ParseLogTimestamp(line); ok {
+		return ts
+	}
+	return time.Now()
+}
+
 // Stream 在目标节点上执行流式命令，持续读取输出发送到 channel
 // PTY 模式下使用 \r 发送命令，过滤命令回显、ANSI 转义和 marker 行
 func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, command string, output chan<- executor.OutputLine) error {
@@ -436,7 +446,7 @@ func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, comma
 					output <- executor.OutputLine{
 						NodeName:  session.NodeName,
 						Content:   cleaned,
-						Timestamp: time.Now(),
+						Timestamp: resolveTimestamp(cleaned),
 						IsError:   false,
 					}
 				} else {
@@ -454,7 +464,7 @@ func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, comma
 						output <- executor.OutputLine{
 							NodeName:  session.NodeName,
 							Content:   cleaned,
-							Timestamp: time.Now(),
+							Timestamp: resolveTimestamp(cleaned),
 							IsError:   false,
 						}
 					}

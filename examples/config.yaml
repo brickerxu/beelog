@@ -1,0 +1,27 @@
+# beelog 示例配置文件
+# 默认路径: ~/.config/beelog/config.yaml
+
+# JumpServer 跳板机配置
+jumpserver:
+  host: "bastion.example.com"       # JumpServer 地址
+  port: 22                          # SSH 端口
+  user: "your-username"             # 登录用户名
+  private_key: "~/.ssh/id_rsa"     # SSH 私钥路径（权限建议 600）
+  passphrase: ""                    # 私钥密码（可选，无密码留空）
+  totp_seed: "JBSWY3DPEHPK3PXP"   # TOTP 密钥种子（Base32 编码）
+
+# 节点分组
+# 节点名称用于在 JumpServer 资产菜单中匹配目标主机
+groups:
+  web: ["web-1", "web-2", "web-3"]
+  database: ["db-1", "db-2"]
+  all: ["web-1", "web-2", "web-3", "db-1", "db-2"]
+
+# 默认参数
+defaults:
+  output_mode: "stream"             # 输出模式: grouped | merged | stream
+  concurrency: 5                    # 最大并发连接数 (2-20)
+  timeout: 60                       # 命令超时秒数
+  max_retries: 3                    # 连接失败重试次数
+  retry_delay: 5                    # 重试间隔秒数
+  keepalive_interval: 300           # 心跳间隔秒数（默认 5 分钟，防止 JumpServer 空闲断开）

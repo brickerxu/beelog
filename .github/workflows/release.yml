@@ -1,4 +1,4 @@
-name: Build and Release
+name: 构建与发布
 
 on:
   push:
@@ -22,43 +22,76 @@ jobs:
             suffix: darwin-arm64
           - goos: windows
             goarch: amd64
-            suffix: windows-amd64.exe
+            suffix: windows-amd64
 
     steps:
-      - uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - name: 配置 Go 环境
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
-      - name: Run tests
-        run: go test ./...
+      - name: 运行测试
+        run: |
+          echo "正在运行单元测试..."
+          go test ./...
+          echo "所有测试通过"
 
-      - name: Build
+      - name: 编译二进制文件
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-        run: go build -ldflags="-s -w" -o beelog-${{ matrix.suffix }} ./cmd/
+        run: |
+          echo "正在编译 ${{ matrix.goos }}/${{ matrix.goarch }} ..."
+          BINARY_NAME=beelog
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME=beelog.exe
+          fi
+          go build -ldflags="-s -w" -o "${BINARY_NAME}" ./cmd/
+          echo "编译完成: ${BINARY_NAME}"
 
-      - name: Upload artifact
+      - name: 打包 ZIP 文件
+        run: |
+          DIST_DIR="beelog-${{ matrix.suffix }}"
+          echo "正在创建目录结构: ${DIST_DIR}/bin/"
+          mkdir -p "${DIST_DIR}/bin"
+
+          BINARY_NAME=beelog
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME=beelog.exe
+          fi
+
+          echo "正在复制二进制文件..."
+          cp "${BINARY_NAME}" "${DIST_DIR}/bin/"
+
+          echo "正在复制示例配置文件..."
+          cp examples/config.yaml "${DIST_DIR}/config-examples.yaml"
+
+          echo "正在打包 ZIP..."
+          zip -r "${DIST_DIR}.zip" "${DIST_DIR}"
+          echo "打包完成: ${DIST_DIR}.zip"
+
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: beelog-${{ matrix.suffix }}
-          path: beelog-${{ matrix.suffix }}
+          path: beelog-${{ matrix.suffix }}.zip
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
+      - name: 下载所有构建产物
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Create Release
+      - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          files: artifacts/*.zip
           generate_release_notes: true

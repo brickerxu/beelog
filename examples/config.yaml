@@ -19,8 +19,8 @@ groups:
 
 # 默认参数
 defaults:
-  output_mode: "stream"             # 输出模式: grouped | merged | stream
-  concurrency: 5                    # 最大并发连接数 (2-20)
+  output_mode: "grouped"            # 输出模式: grouped | merged | stream
+  concurrency: 20                   # 最大并发连接数 (2-20)
   timeout: 60                       # 命令超时秒数
   max_retries: 3                    # 连接失败重试次数
   retry_delay: 5                    # 重试间隔秒数

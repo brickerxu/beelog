@@ -14,7 +14,7 @@ import (
 	"github.com/brickerxu/beelog/internal/config"
 	"github.com/brickerxu/beelog/internal/executor"
 	"github.com/brickerxu/beelog/internal/output"
-	"github.com/chzyer/readline"
+	"github.com/ergochat/readline"
 )
 
 // DefaultHistoryPath 默认命令历史文件路径
@@ -119,6 +119,10 @@ func isSessionCommand(input string) bool {
 
 // Run 启动 REPL 循环，阻塞直到用户退出或 context 取消
 func (s *interactiveShell) Run(ctx context.Context) error {
+	// 忽略 SIGTSTP（Ctrl+Z），让 readline 将其作为 undo 处理
+	signal.Ignore(syscall.SIGTSTP)
+	defer signal.Reset(syscall.SIGTSTP)
+
 	historyFile, err := ensureHistoryFile()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "警告: 无法初始化命令历史文件: %v\n", err)
@@ -135,6 +139,7 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 		HistoryFile:       historyFile,
 		HistorySearchFold: true,
 		AutoComplete:      s.completer,
+		Undo:              true,
 	})
 	if err != nil {
 		return fmt.Errorf("初始化 readline 失败: %w", err)

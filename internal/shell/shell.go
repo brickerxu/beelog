@@ -17,8 +17,11 @@ import (
 	"github.com/ergochat/readline"
 )
 
-// DefaultHistoryPath 默认命令历史文件路径
-const DefaultHistoryPath = "~/.config/beelog/history"
+// DefaultHistoryDir 默认命令历史文件目录
+const DefaultHistoryDir = "~/.config/beelog/history"
+
+// MaxHistoryLines 历史记录最大行数
+const MaxHistoryLines = 1000
 
 // interactiveShell 实现 InteractiveShell 接口
 type interactiveShell struct {
@@ -123,7 +126,7 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 	signal.Ignore(syscall.SIGTSTP)
 	defer signal.Reset(syscall.SIGTSTP)
 
-	historyFile, err := ensureHistoryFile()
+	historyFile, err := ensureHistoryFile(s.group)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "警告: 无法初始化命令历史文件: %v\n", err)
 		historyFile = ""
@@ -292,18 +295,40 @@ func (s *interactiveShell) dispatchStream(ctx context.Context, sessions []execut
 }
 
 // ensureHistoryFile 展开历史文件路径并确保其父目录存在
-func ensureHistoryFile() (string, error) {
-	expanded, err := config.ExpandPath(DefaultHistoryPath)
+// 每个节点分组使用独立的历史文件：~/.config/beelog/history/{group}
+func ensureHistoryFile(group string) (string, error) {
+	dir, err := config.ExpandPath(DefaultHistoryDir)
 	if err != nil {
-		return "", fmt.Errorf("expand history path: %w", err)
+		return "", fmt.Errorf("expand history dir: %w", err)
 	}
 
-	dir := filepath.Dir(expanded)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("create history dir %s: %w", dir, err)
 	}
 
-	return expanded, nil
+	historyFile := filepath.Join(dir, group)
+
+	// 截断过长的历史文件
+	truncateHistory(historyFile, MaxHistoryLines)
+
+	return historyFile, nil
+}
+
+// truncateHistory 将历史文件截断到最近 maxLines 行
+func truncateHistory(path string, maxLines int) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // 文件不存在或读取失败，忽略
+	}
+
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) <= maxLines {
+		return
+	}
+
+	// 保留最近的 maxLines 行
+	kept := lines[len(lines)-maxLines:]
+	os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0600)
 }
 // resolveTimestamp tries to parse a log timestamp from the line content.
 // Falls back to time.Now() if parsing fails.

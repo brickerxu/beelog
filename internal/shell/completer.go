@@ -169,10 +169,10 @@ func (c *remoteCompleter) fetchCandidates(session *ssh.NodeSession, partial stri
 	// 对于空 partial，列出当前目录
 	var lsCmd string
 	if partial == "" {
-		lsCmd = "ls -1 -d */ * 2>/dev/null"
+		lsCmd = "ls -1 -dF */ * 2>/dev/null"
 	} else {
 		// 对 partial 路径进行通配符匹配
-		lsCmd = "ls -1 -d " + shellEscape(partial) + "* 2>/dev/null"
+		lsCmd = "ls -1 -dF " + shellEscape(partial) + "* 2>/dev/null"
 	}
 
 	// 使用短超时执行，避免阻塞用户输入
@@ -194,8 +194,9 @@ func (c *remoteCompleter) fetchCandidates(session *ssh.NodeSession, partial stri
 	return parseLsOutput(result.Output)
 }
 
-// parseLsOutput 解析 ls 命令的输出为候选项列表
-// 过滤掉命令标记行、ANSI 转义序列、shell 提示符行和空行
+// parseLsOutput 解析 ls -F 命令的输出为候选项列表
+// -F 标志会给目录追加 /，可执行文件追加 *，符号链接追加 @，管道追加 |
+// 保留目录的 / 后缀，去掉其他类型标记
 func parseLsOutput(output string) []string {
 	output = strings.TrimSpace(output)
 	if output == "" {
@@ -227,13 +228,34 @@ func parseLsOutput(output string) []string {
 		if cleaned == "" {
 			continue
 		}
-		// 过滤掉 shell 提示符行（以 $, #, > 结尾且包含 @ 或 ] 等提示符特征）
+		// 过滤掉 shell 提示符行
 		if isShellPromptLine(cleaned) {
 			continue
 		}
+		// 处理 ls -F 的类型标记：保留 / (目录)，去掉 * @ | = (其他类型)
+		cleaned = cleanLsClassifier(cleaned)
 		candidates = append(candidates, cleaned)
 	}
 	return candidates
+}
+
+// cleanLsClassifier 处理 ls -F 追加的分类标记
+// 保留目录的 / 后缀，去掉可执行文件的 *、符号链接的 @、管道的 | 等标记
+func cleanLsClassifier(name string) string {
+	if name == "" {
+		return name
+	}
+	last := name[len(name)-1]
+	switch last {
+	case '/':
+		// 目录，保留 /
+		return name
+	case '*', '@', '|', '=':
+		// 可执行文件、符号链接、管道、socket，去掉标记
+		return name[:len(name)-1]
+	default:
+		return name
+	}
 }
 
 // isShellPromptLine 判断一行是否是 shell 提示符

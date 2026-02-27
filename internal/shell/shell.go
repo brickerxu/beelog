@@ -156,6 +156,15 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 		default:
 		}
 
+		// 每次读取前刷新 prompt（反映最新的活跃节点数）
+		rl.SetPrompt(s.prompt())
+
+		// 所有节点断开时自动退出
+		if len(s.sessMgr.GetActiveSessions()) == 0 {
+			fmt.Fprintln(os.Stderr, "所有节点已断开，退出 beelog")
+			return nil
+		}
+
 		line, err := rl.Readline()
 		if err != nil {
 			if err == io.EOF {

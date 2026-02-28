@@ -17,6 +17,12 @@ groups:
   database: ["db-1", "db-2"]
   all: ["web-1", "web-2", "web-3", "db-1", "db-2"]
 
+# 每个分组的默认工作目录（可选）
+# 连接后自动 cd 到指定目录，未配置的分组保持默认主目录
+workdirs:
+  web: "/www/webapp/logs"
+  database: "/var/lib/mysql"
+
 # 默认参数
 defaults:
   output_mode: "grouped"            # 输出模式: grouped | merged | stream

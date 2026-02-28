@@ -151,7 +151,20 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 12. 创建并运行 InteractiveShell
+	// 12. 如果配置了默认工作目录，连接后自动 cd
+	if workdir, ok := cfg.WorkDirs[group]; ok && workdir != "" {
+		fmt.Printf("切换到默认工作目录: %s\n", workdir)
+		for _, s := range sessions {
+			cdCtx, cdCancel := context.WithTimeout(ctx, 5*time.Second)
+			_, err := sshMgr.Execute(cdCtx, s, "cd "+workdir)
+			cdCancel()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[WARN] [%s] 切换工作目录失败: %v\n", s.NodeName, err)
+			}
+		}
+	}
+
+	// 13. 创建并运行 InteractiveShell
 	outputMode := output.OutputMode(cfg.Defaults.OutputMode)
 	var sh shell.InteractiveShell
 	if debug {

@@ -4,6 +4,7 @@ package config
 type Config struct {
 	JumpServer JumpServerConfig    `yaml:"jumpserver"`
 	Groups     map[string][]string `yaml:"groups"`
+	WorkDirs   map[string]string   `yaml:"workdirs,omitempty"` // 每个分组的默认工作目录
 	Defaults   DefaultsConfig      `yaml:"defaults"`
 }
 

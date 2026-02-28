@@ -22,6 +22,14 @@ func SanitizeConfig(cfg *Config) Config {
 		}
 	}
 
+	// Deep copy workdirs map
+	if cfg.WorkDirs != nil {
+		sanitized.WorkDirs = make(map[string]string, len(cfg.WorkDirs))
+		for k, v := range cfg.WorkDirs {
+			sanitized.WorkDirs[k] = v
+		}
+	}
+
 	// Mask sensitive fields
 	if sanitized.JumpServer.TOTPSeed != "" {
 		sanitized.JumpServer.TOTPSeed = maskedValue

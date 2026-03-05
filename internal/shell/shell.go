@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -125,6 +126,9 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 	// 忽略 SIGTSTP（Ctrl+Z），让 readline 将其作为 undo 处理
 	signal.Ignore(syscall.SIGTSTP)
 	defer signal.Reset(syscall.SIGTSTP)
+
+	// 显示欢迎信息和快捷键提示
+	s.printWelcomeMessage()
 
 	historyFile, err := ensureHistoryFile(s.group)
 	if err != nil {
@@ -339,6 +343,7 @@ func truncateHistory(path string, maxLines int) {
 	kept := lines[len(lines)-maxLines:]
 	os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0600)
 }
+
 // resolveTimestamp tries to parse a log timestamp from the line content.
 // Falls back to time.Now() if parsing fails.
 func resolveTimestamp(line string) time.Time {
@@ -346,4 +351,30 @@ func resolveTimestamp(line string) time.Time {
 		return ts
 	}
 	return time.Now()
+}
+
+// printWelcomeMessage 显示欢迎信息和快捷键提示
+func (s *interactiveShell) printWelcomeMessage() {
+	const (
+		bold   = "\033[1m"
+		cyan   = "\033[36m"
+		yellow = "\033[33m"
+		reset  = "\033[0m"
+	)
+
+	fmt.Printf("\n%s%sbeelog 交互式 Shell%s\n", bold, cyan, reset)
+	fmt.Printf("%s快捷键:%s\n", bold, reset)
+	fmt.Println("  • 历史记录: ↑/↓")
+	fmt.Println("  • 路径补全: Tab")
+	fmt.Println("  • 终止命令: Ctrl+C")
+
+	// 根据操作系统显示不同的撤销提示
+	if runtime.GOOS == "darwin" {
+		fmt.Printf("  • 撤销输入: Ctrl+Z 或 Ctrl+_ %s(终端限制，无法使用 Command+Z)%s\n", yellow, reset)
+	} else {
+		fmt.Println("  • 撤销输入: Ctrl+Z 或 Ctrl+_")
+	}
+
+	fmt.Println("\n输入 :help 查看所有命令")
+	fmt.Println()
 }

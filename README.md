@@ -105,6 +105,9 @@ Filesystem      Size  Used Avail Use% Mounted on
 | `↑` / `↓` | 浏览历史命令 |
 | `Tab` | 远程文件路径补全 |
 | `Ctrl+C` | 终止当前命令（不退出 shell） |
+| `Ctrl+Z` / `Ctrl+_` | 撤销输入 |
+
+**macOS 用户提示**：由于终端协议限制，Command+Z 无法被命令行程序捕获。请使用 `Ctrl+Z` 或 `Ctrl+_` 进行撤销。如果您习惯 Command 键，可以在终端设置中自定义键盘映射（iTerm2: Preferences → Keys，Terminal.app: Preferences → Profiles → Keyboard）。
 
 ### 会话管理命令
 
@@ -146,6 +149,36 @@ log line 2
 [web-1] log line 1
 [web-2] log line 1
 [web-1] log line 2
+```
+
+## 常见问题 (FAQ)
+
+### Q: 为什么 macOS 无法使用 Command+Z 撤销？
+
+A: 这是终端环境的技术限制：
+
+1. **终端协议限制**：标准终端协议（ANSI/VT100）不传递 Command 键事件
+2. **系统级拦截**：macOS 的 Command 键被终端模拟器（Terminal.app、iTerm2）在应用层之前拦截
+3. **解决方案**：使用 `Ctrl+Z` 或 `Ctrl+_`（所有平台通用）
+
+如果您希望使用更舒适的快捷键，可以在终端设置中自定义键盘映射：
+- **iTerm2**: Preferences → Keys → Key Bindings
+- **Terminal.app**: Preferences → Profiles → Keyboard
+
+### Q: JumpServer 连接超时怎么办？
+
+A: 检查以下几点：
+1. 网络连接是否正常
+2. JumpServer 地址和端口是否正确
+3. SSH 私钥权限是否为 0600
+4. TOTP seed 是否正确
+5. 系统时钟是否与 TOTP 服务器同步
+
+### Q: 如何自定义输出颜色？
+
+A: 当前版本使用内置颜色方案。如需禁用颜色，可设置环境变量：
+```bash
+NO_COLOR=1 beelog --group web
 ```
 
 ## 运行测试

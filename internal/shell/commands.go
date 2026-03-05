@@ -2,6 +2,7 @@ package shell
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 )
 
@@ -57,8 +58,26 @@ func HandleSessionCommand(cmd string, args []string, sessMgr SessionManager) (qu
 
 // helpText 返回会话命令帮助文本
 func helpText() string {
-	return `可用的会话命令:
+	help := `
+beelog 交互式 Shell 帮助
+
+会话管理命令:
   :quit / :exit          断开所有连接并退出
   :disconnect <node>     断开指定节点的连接
-  :help                  显示此帮助信息`
+  :help                  显示此帮助信息
+
+快捷键:
+  ↑ / ↓                  浏览历史命令
+  Tab                    远程文件路径补全
+  Ctrl+C                 终止当前命令（不退出 shell）
+`
+
+	// 根据操作系统显示不同的撤销提示
+	if runtime.GOOS == "darwin" {
+		help += "  Ctrl+Z / Ctrl+_        撤销输入（macOS 终端不支持 Command+Z）\n"
+	} else {
+		help += "  Ctrl+Z / Ctrl+_        撤销输入\n"
+	}
+
+	return help
 }

@@ -124,8 +124,8 @@ func isSessionCommand(input string) bool {
 // Run 启动 REPL 循环，阻塞直到用户退出或 context 取消
 func (s *interactiveShell) Run(ctx context.Context) error {
 	// 忽略 SIGTSTP（Ctrl+Z），让 readline 将其作为 undo 处理
-	signal.Ignore(syscall.SIGTSTP)
-	defer signal.Reset(syscall.SIGTSTP)
+	setupSignals()
+	defer resetSignals()
 
 	// 显示欢迎信息和快捷键提示
 	s.printWelcomeMessage()

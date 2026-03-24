@@ -173,6 +173,13 @@ func (m *sshConnManager) Execute(ctx context.Context, session *NodeSession, comm
 	go func() {
 		defer close(done)
 		for {
+			// 每次 Read 前检查 context，确保取消后能及时退出，
+			// 避免与下一条命令的读取 goroutine 竞争同一 stdout 管道
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			n, err := session.Stdout.Read(readBuf)
 			if n > 0 {
 				accumulated.Write(readBuf[:n])
@@ -191,7 +198,20 @@ func (m *sshConnManager) Execute(ctx context.Context, session *NodeSession, comm
 
 	select {
 	case <-ctx.Done():
-		result.Error = fmt.Errorf("[%s] 命令执行超时", session.NodeName)
+		// 发送 Ctrl+C 终止远端命令（与 Stream() 保持一致）
+		session.Stdin.Write([]byte{0x03})
+		// 等待读取 goroutine 退出，避免残留 goroutine 与下一条命令竞争 stdout。
+		// 发送 0x03 后远端会输出 ^C 并返回提示符，Read() 将很快解除阻塞，
+		// goroutine 检查到 ctx.Done() 后退出。
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		errMsg := "命令被中断"
+		if ctx.Err() == context.DeadlineExceeded {
+			errMsg = "命令执行超时"
+		}
+		result.Error = fmt.Errorf("[%s] %s", session.NodeName, errMsg)
 		result.Duration = time.Since(start)
 		return result, result.Error
 	case <-done:

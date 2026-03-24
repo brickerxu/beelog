@@ -26,6 +26,8 @@ type DefaultsConfig struct {
 	MaxRetries        int    `yaml:"max_retries"`        // 连接重试次数
 	RetryDelay        int    `yaml:"retry_delay"`        // 重试间隔秒数
 	KeepaliveInterval int    `yaml:"keepalive_interval"` // 心跳间隔秒数 (默认 300，即 5 分钟)
+	SaveDir           string `yaml:"save_dir"`           // 结果保存目录，默认 ~/beelog_log/
+	SaveFormat        string `yaml:"save_format"`        // 保存格式: text | structured | json | csv
 }
 
 // ConfigManager 配置管理接口

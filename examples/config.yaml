@@ -31,3 +31,5 @@ defaults:
   max_retries: 3                    # 连接失败重试次数
   retry_delay: 5                    # 重试间隔秒数
   keepalive_interval: 300           # 心跳间隔秒数（默认 5 分钟，防止 JumpServer 空闲断开）
+  save_dir: "~/beelog_log/"         # :save 命令的默认保存目录
+  save_format: "text"               # :save 默认格式: text | structured | json | csv

@@ -15,6 +15,7 @@ import (
 	"github.com/brickerxu/beelog/internal/config"
 	"github.com/brickerxu/beelog/internal/executor"
 	"github.com/brickerxu/beelog/internal/output"
+	"github.com/brickerxu/beelog/internal/saver"
 	"github.com/ergochat/readline"
 )
 
@@ -26,14 +27,16 @@ const MaxHistoryLines = 1000
 
 // interactiveShell 实现 InteractiveShell 接口
 type interactiveShell struct {
-	group     string
-	exec      executor.Executor
-	sessMgr   SessionManager
-	outputAgg output.OutputAggregator
-	mode      output.OutputMode
-	completer *remoteCompleter
-	execFn    executor.ExecFunc
-	cwd       string // 远程节点当前工作目录
+	group      string
+	exec       executor.Executor
+	sessMgr    SessionManager
+	outputAgg  output.OutputAggregator
+	mode       output.OutputMode
+	completer  *remoteCompleter
+	execFn     executor.ExecFunc
+	cwd        string                // 远程节点当前工作目录
+	lastResult *executor.BatchResult // 上一条命令的执行结果
+	saveCfg    saver.Config          // 保存配置
 }
 
 // NewInteractiveShell 创建交互式 shell 实例
@@ -44,6 +47,7 @@ func NewInteractiveShell(
 	outputAgg output.OutputAggregator,
 	mode output.OutputMode,
 	execFn executor.ExecFunc,
+	saveCfg saver.Config,
 ) InteractiveShell {
 	return &interactiveShell{
 		group:     group,
@@ -53,6 +57,7 @@ func NewInteractiveShell(
 		mode:      mode,
 		completer: NewRemoteCompleter(sessMgr, execFn),
 		execFn:    execFn,
+		saveCfg:   saveCfg,
 	}
 }
 
@@ -65,6 +70,7 @@ func NewInteractiveShellWithDebug(
 	mode output.OutputMode,
 	execFn executor.ExecFunc,
 	debug bool,
+	saveCfg saver.Config,
 ) InteractiveShell {
 	return &interactiveShell{
 		group:     group,
@@ -74,6 +80,7 @@ func NewInteractiveShellWithDebug(
 		mode:      mode,
 		completer: NewRemoteCompleterWithDebug(sessMgr, execFn, debug),
 		execFn:    execFn,
+		saveCfg:   saveCfg,
 	}
 }
 
@@ -191,6 +198,13 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 			if cmd == "" {
 				continue
 			}
+			// :save 需要访问 lastResult，在 shell 层直接处理
+			if cmd == "save" {
+				msg := s.handleSave(args)
+				fmt.Fprintln(os.Stderr, msg)
+				rl.SetPrompt(s.prompt())
+				continue
+			}
 			quit, msg := HandleSessionCommand(cmd, args, s.sessMgr)
 			if msg != "" {
 				fmt.Fprintln(os.Stderr, msg)
@@ -257,6 +271,9 @@ func (s *interactiveShell) dispatchExec(ctx context.Context, sessions []executor
 		fmt.Fprintf(os.Stderr, "命令执行失败: %v\n", err)
 		return
 	}
+
+	// 保存本次结果，供 :save 使用
+	s.lastResult = result
 
 	if s.mode == output.ModeMerged {
 		var lines []executor.OutputLine
@@ -377,4 +394,28 @@ func (s *interactiveShell) printWelcomeMessage() {
 
 	fmt.Println("\n输入 :help 查看所有命令")
 	fmt.Println()
+}
+
+// handleSave 处理 :save 命令，返回要显示给用户的消息
+// 用法: :save [filename|filepath] [--format text|structured|json|csv]
+func (s *interactiveShell) handleSave(args []string) string {
+	if s.lastResult == nil {
+		return "没有可保存的内容，请先执行一条命令"
+	}
+
+	var pathArg, formatArg string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--format" && i+1 < len(args) {
+			formatArg = args[i+1]
+			i++
+		} else if pathArg == "" {
+			pathArg = args[i]
+		}
+	}
+
+	filePath, err := saver.Save(s.lastResult, pathArg, formatArg, s.saveCfg)
+	if err != nil {
+		return fmt.Sprintf("保存失败: %v", err)
+	}
+	return fmt.Sprintf("已保存到: %s", filePath)
 }

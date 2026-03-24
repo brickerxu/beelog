@@ -21,6 +21,8 @@ const (
 	defaultMaxRetries        = 3
 	defaultRetryDelay        = 5
 	defaultKeepaliveInterval = 300
+	defaultSaveDir           = "~/beelog_log/"
+	defaultSaveFormat        = "text"
 )
 
 // configManager 实现 ConfigManager 接口
@@ -157,6 +159,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Defaults.KeepaliveInterval == 0 {
 		cfg.Defaults.KeepaliveInterval = defaultKeepaliveInterval
+	}
+	if cfg.Defaults.SaveDir == "" {
+		cfg.Defaults.SaveDir = defaultSaveDir
+	}
+	if cfg.Defaults.SaveFormat == "" {
+		cfg.Defaults.SaveFormat = defaultSaveFormat
 	}
 }
 

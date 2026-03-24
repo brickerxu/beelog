@@ -64,6 +64,10 @@ beelog 交互式 Shell 帮助
 会话管理命令:
   :quit / :exit          断开所有连接并退出
   :disconnect <node>     断开指定节点的连接
+  :save                  保存上一条命令的输出到默认目录
+  :save <filename>       保存到默认目录，使用指定文件名
+  :save <filepath>       保存到指定完整路径（如 ./result.txt）
+  :save <name> --format <fmt>  指定格式保存（text/structured/json/csv）
   :help                  显示此帮助信息
 
 快捷键:

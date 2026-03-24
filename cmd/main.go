@@ -10,6 +10,7 @@ import (
 	"github.com/brickerxu/beelog/internal/config"
 	"github.com/brickerxu/beelog/internal/executor"
 	"github.com/brickerxu/beelog/internal/output"
+	"github.com/brickerxu/beelog/internal/saver"
 	"github.com/brickerxu/beelog/internal/shell"
 	"github.com/brickerxu/beelog/internal/ssh"
 	"github.com/brickerxu/beelog/internal/totp"
@@ -166,11 +167,15 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// 13. 创建并运行 InteractiveShell
 	outputMode := output.OutputMode(cfg.Defaults.OutputMode)
+	saveCfg := saver.Config{
+		DefaultDir:    cfg.Defaults.SaveDir,
+		DefaultFormat: saver.Format(cfg.Defaults.SaveFormat),
+	}
 	var sh shell.InteractiveShell
 	if debug {
-		sh = shell.NewInteractiveShellWithDebug(group, exec, sessMgr, outputAgg, outputMode, execFn, true)
+		sh = shell.NewInteractiveShellWithDebug(group, exec, sessMgr, outputAgg, outputMode, execFn, true, saveCfg)
 	} else {
-		sh = shell.NewInteractiveShell(group, exec, sessMgr, outputAgg, outputMode, execFn)
+		sh = shell.NewInteractiveShell(group, exec, sessMgr, outputAgg, outputMode, execFn, saveCfg)
 	}
 
 	err = sh.Run(ctx)

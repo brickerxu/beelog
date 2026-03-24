@@ -72,7 +72,7 @@ beelog 交互式 Shell 帮助
 
 快捷键:
   ↑ / ↓                  浏览历史命令
-  Tab                    远程文件路径补全
+  Tab                    远程文件路径补全；:disconnect 后补全活跃节点名
   Ctrl+C                 终止当前命令（不退出 shell）
 `
 

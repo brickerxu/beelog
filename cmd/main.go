@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +37,33 @@ func main() {
 	rootCmd.Flags().Int("concurrency", 0, "最大并发数, 0 表示使用配置文件值")
 
 	_ = rootCmd.MarkFlagRequired("group")
+
+	// 注册 --group flag 的动态补全：从配置文件读取分组名
+	_ = rootCmd.RegisterFlagCompletionFunc("group", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		configPath, _ := cmd.Flags().GetString("config")
+		cfgMgr := config.NewConfigManager()
+		cfg, err := cfgMgr.Load(configPath)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		groups := make([]string, 0, len(cfg.Groups))
+		for name := range cfg.Groups {
+			groups = append(groups, name)
+		}
+		return groups, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	// 注册 install-completion 子命令：自动检测 shell 并安装补全脚本
+	installCompletionCmd := &cobra.Command{
+		Use:          "install-completion",
+		Short:        "自动安装 shell 补全脚本（支持 bash/zsh）",
+		Long:         "检测当前 shell 类型，自动将补全脚本安装到正确位置并更新 shell 配置文件。\n支持 zsh（含 oh-my-zsh）和 bash（含 Homebrew）。",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runInstallCompletion(rootCmd)
+		},
+	}
+	rootCmd.AddCommand(installCompletionCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -318,4 +348,200 @@ func (m *sessionManager) DisconnectAll() error {
 		return fmt.Errorf("断开连接时出错: %v", errs)
 	}
 	return nil
+}
+
+// ─── install-completion 实现 ───────────────────────────────────────────────
+
+// runInstallCompletion 检测当前 shell 并自动安装补全脚本
+func runInstallCompletion(rootCmd *cobra.Command) error {
+	shellPath := os.Getenv("SHELL")
+	if shellPath == "" {
+		return fmt.Errorf("无法检测当前 shell（$SHELL 未设置），请手动安装:\n  beelog completion bash/zsh")
+	}
+	shellName := filepath.Base(shellPath)
+	fmt.Printf("检测到 shell: %s\n", shellName)
+
+	switch shellName {
+	case "zsh":
+		return installZshCompletion(rootCmd)
+	case "bash":
+		return installBashCompletion(rootCmd)
+	default:
+		return fmt.Errorf("暂不支持 %s，请手动安装:\n  beelog completion %s", shellName, shellName)
+	}
+}
+
+// installZshCompletion 安装 zsh 补全脚本，自动检测 oh-my-zsh
+func installZshCompletion(rootCmd *cobra.Command) error {
+	var buf bytes.Buffer
+	if err := rootCmd.GenZshCompletion(&buf); err != nil {
+		return fmt.Errorf("生成补全脚本失败: %w", err)
+	}
+	script := buf.Bytes()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("无法获取用户主目录: %w", err)
+	}
+
+	var installPath string
+	var needFpath bool
+	var rcFile string
+
+	// 检测 oh-my-zsh（$ZSH 已设置）
+	if zshDir := os.Getenv("ZSH"); zshDir != "" {
+		customDir := os.Getenv("ZSH_CUSTOM")
+		if customDir == "" {
+			customDir = filepath.Join(zshDir, "custom")
+		}
+		completionsDir := filepath.Join(customDir, "completions")
+		if err := os.MkdirAll(completionsDir, 0755); err == nil {
+			installPath = filepath.Join(completionsDir, "_beelog")
+			fmt.Printf("检测到 oh-my-zsh，安装路径: %s\n", installPath)
+		}
+	}
+
+	// 标准 zsh：~/.zsh/completions/
+	if installPath == "" {
+		completionsDir := filepath.Join(home, ".zsh", "completions")
+		if err := os.MkdirAll(completionsDir, 0755); err != nil {
+			return fmt.Errorf("创建目录失败: %w", err)
+		}
+		installPath = filepath.Join(completionsDir, "_beelog")
+		rcFile = filepath.Join(home, ".zshrc")
+		needFpath = true
+	}
+
+	if err := writeCompletionFile(installPath, script); err != nil {
+		return err
+	}
+
+	// 非 oh-my-zsh：确保 ~/.zshrc 中包含 fpath
+	if needFpath {
+		fpathLine := fmt.Sprintf("fpath=(%s $fpath)", filepath.Dir(installPath))
+		if err := addLineToFileIfAbsent(rcFile, fpathLine, "# beelog 补全目录"); err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] 无法更新 %s，请手动添加:\n  %s\n", rcFile, fpathLine)
+		} else {
+			fmt.Printf("✓ 已更新 fpath: %s\n", rcFile)
+		}
+	}
+
+	printReloadHint("zsh", home)
+	return nil
+}
+
+// installBashCompletion 安装 bash 补全脚本，支持 Homebrew 和 Linux 用户目录
+func installBashCompletion(rootCmd *cobra.Command) error {
+	var buf bytes.Buffer
+	if err := rootCmd.GenBashCompletionV2(&buf, true); err != nil {
+		return fmt.Errorf("生成补全脚本失败: %w", err)
+	}
+	script := buf.Bytes()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("无法获取用户主目录: %w", err)
+	}
+
+	var installPath string
+	var rcFile string
+	var needSource bool
+
+	// macOS：尝试 Homebrew bash-completion 目录
+	for _, dir := range []string{
+		"/opt/homebrew/etc/bash_completion.d", // Apple Silicon
+		"/usr/local/etc/bash_completion.d",    // Intel Mac
+	} {
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			installPath = filepath.Join(dir, "beelog")
+			fmt.Printf("检测到 Homebrew bash-completion 目录: %s\n", dir)
+			break
+		}
+	}
+
+	// Linux：用户级 bash-completion 目录
+	if installPath == "" {
+		completionsDir := filepath.Join(home, ".local", "share", "bash-completion", "completions")
+		if err := os.MkdirAll(completionsDir, 0755); err == nil {
+			installPath = filepath.Join(completionsDir, "beelog")
+		}
+	}
+
+	// 兜底：~/.bash_completions/ + source 写入 .bashrc
+	if installPath == "" {
+		completionsDir := filepath.Join(home, ".bash_completions")
+		if err := os.MkdirAll(completionsDir, 0755); err != nil {
+			return fmt.Errorf("创建目录失败: %w", err)
+		}
+		installPath = filepath.Join(completionsDir, "beelog")
+		rcFile = filepath.Join(home, ".bashrc")
+		needSource = true
+	}
+
+	if err := writeCompletionFile(installPath, script); err != nil {
+		return err
+	}
+
+	if needSource {
+		sourceLine := fmt.Sprintf("source %s", installPath)
+		if err := addLineToFileIfAbsent(rcFile, sourceLine, "# beelog 补全"); err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] 无法更新 %s，请手动添加:\n  %s\n", rcFile, sourceLine)
+		} else {
+			fmt.Printf("✓ 已更新 source: %s\n", rcFile)
+		}
+	}
+
+	printReloadHint("bash", home)
+	return nil
+}
+
+// writeCompletionFile 写入补全脚本文件，内容无变化时跳过
+func writeCompletionFile(path string, content []byte) error {
+	if existing, err := os.ReadFile(path); err == nil {
+		if bytes.Equal(existing, content) {
+			fmt.Printf("✓ 补全脚本无变化: %s\n", path)
+			return nil
+		}
+		fmt.Printf("✓ 更新补全脚本: %s\n", path)
+	} else {
+		fmt.Printf("✓ 写入补全脚本: %s\n", path)
+	}
+	return os.WriteFile(path, content, 0644)
+}
+
+// addLineToFileIfAbsent 向文件追加一行（幂等：已存在则跳过）
+func addLineToFileIfAbsent(filePath, line, comment string) error {
+	content, err := os.ReadFile(filePath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if strings.Contains(string(content), line) {
+		return nil // 已存在，幂等跳过
+	}
+	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	prefix := "\n"
+	if len(content) > 0 && content[len(content)-1] == '\n' {
+		prefix = ""
+	}
+	_, err = fmt.Fprintf(f, "%s\n%s\n%s\n", prefix, comment, line)
+	return err
+}
+
+// printReloadHint 打印安装后的重载提示
+func printReloadHint(shell, home string) {
+	rcFile := filepath.Join(home, ".zshrc")
+	if shell == "bash" {
+		rcFile = filepath.Join(home, ".bashrc")
+	}
+	fmt.Printf("\n安装完成！执行以下命令使补全立即生效:\n")
+	fmt.Printf("  source %s\n", rcFile)
+	fmt.Println("或重新打开终端。")
+	if shell == "zsh" {
+		fmt.Println("\n如补全未生效，尝试重建补全缓存:")
+		fmt.Println("  rm -f ~/.zcompdump && compinit")
+	}
 }

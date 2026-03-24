@@ -56,6 +56,12 @@ func (c *remoteCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	// 提取光标前的文本
 	lineStr := string(line[:pos])
 
+	// :disconnect 命令：补全活跃节点名
+	const disconnectPrefix = ":disconnect "
+	if strings.HasPrefix(lineStr, disconnectPrefix) {
+		return c.completeNodeNames(lineStr[len(disconnectPrefix):])
+	}
+
 	// 提取最后一个 word（即用户正在输入的路径片段）
 	lastWord := extractLastWord(lineStr)
 
@@ -150,6 +156,44 @@ func extractLastWord(line string) string {
 		return line
 	}
 	return line[lastSpace+1:]
+}
+
+// completeNodeNames 补全 :disconnect 命令的节点名参数
+// partial 是用户已输入的节点名前缀（可以为空）
+func (c *remoteCompleter) completeNodeNames(partial string) ([][]rune, int) {
+	sessions := c.sessMgr.GetActiveSessions()
+	candidates := make([]string, 0, len(sessions))
+	for _, s := range sessions {
+		if strings.HasPrefix(s.NodeName, partial) {
+			candidates = append(candidates, s.NodeName)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, 0
+	}
+
+	// 唯一匹配
+	if len(candidates) == 1 {
+		suffix := candidateSuffix(candidates[0], partial)
+		if suffix == "" {
+			return nil, 0
+		}
+		return [][]rune{[]rune(suffix)}, 0
+	}
+
+	// 多个匹配：先尝试补全公共前缀
+	commonPrefix := longestCommonPrefix(candidates)
+	if len(commonPrefix) > len(partial) {
+		suffix := commonPrefix[len(partial):]
+		return [][]rune{[]rune(suffix)}, 0
+	}
+
+	// 无更多公共前缀，返回所有候选项
+	result := make([][]rune, len(candidates))
+	for i, cand := range candidates {
+		result[i] = []rune(candidateSuffix(cand, partial))
+	}
+	return result, len([]rune(partial))
 }
 
 // getFirstActiveSession 获取第一个活跃的节点会话

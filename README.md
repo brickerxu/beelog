@@ -34,13 +34,21 @@ jumpserver:
 groups:
   web: ["web-1", "web-2"]
 
+# 每个分组的默认工作目录（可选）
+# 连接后自动 cd 到指定目录，未配置的分组保持默认主目录
+workdirs:
+  web: "/www/webapp/logs"
+  database: "/var/lib/mysql"
+
 defaults:
-  output_mode: "stream"
-  concurrency: 5
-  timeout: 60
-  max_retries: 3
-  retry_delay: 5
-  keepalive_interval: 300
+  output_mode: "grouped"            # 输出模式: grouped | merged | stream
+  concurrency: 5                   # 最大并发连接数 (2-20)
+  timeout: 60                       # 命令超时秒数
+  max_retries: 3                    # 连接失败重试次数
+  retry_delay: 5                    # 重试间隔秒数
+  keepalive_interval: 300           # 心跳间隔秒数（默认 5 分钟，防止 JumpServer 空闲断开）
+  save_dir: "~/beelog_log/"         # :save 命令的默认保存目录
+  save_format: "text"               # :save 默认格式: text | structured | json | csv
 ```
 
 确保 SSH 私钥权限为 600：

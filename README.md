@@ -9,6 +9,7 @@
 - 并发连接多节点，命令一次输入、所有节点同时执行
 - 三种输出模式：按节点分组 / 按时间戳合并 / 实时流式
 - 彩色输出区分不同节点
+- **grep 搜索词高亮**：使用 `grep` 过滤日志时，自动以青色加粗高亮匹配的关键词
 - 会话管理命令（`:quit`、`:disconnect`、`:help`）
 - 连接保活，防止 JumpServer 空闲超时断开
 
@@ -98,6 +99,28 @@ Filesystem      Size  Used Avail Use% Mounted on
 /dev/sda1        50G   15G   33G  31% /
 ```
 
+### grep 搜索词高亮
+
+命令中含有 `grep` 时，匹配到的关键词会以**青色加粗**显示。支持管道过滤、多模式、大小写不敏感等场景：
+
+```
+# 单词高亮
+beelog [web:3]> tail -f /var/log/app.log | grep "ERROR"
+[web-1] 2024-01-15 10:31:00 [ERROR] connection refused  ← ERROR 青色高亮
+
+# 多关键词（-e 参数或多级 grep 管道，两个词都高亮）
+beelog [web:3]> grep -e "ERROR" -e "TIMEOUT" app.log
+beelog [web:3]> grep 206092 | grep 正常IP
+
+# 大小写不敏感
+beelog [web:3]> grep -i "warn" app.log
+
+# -v 反向过滤（无高亮，因为无需标记）
+beelog [web:3]> grep -v "DEBUG" app.log
+```
+
+> **注意**：beelog 使用 PTY 连接远程，远程 `grep --color=auto` 会输出红色转义码。beelog 会自动剥离这些原始颜色码，再统一用青色标注，确保显示一致。
+
 ### 快捷操作
 
 | 操作 | 说明 |
@@ -115,6 +138,10 @@ Filesystem      Size  Used Avail Use% Mounted on
 |------|------|
 | `:quit` / `:exit` | 断开所有连接并退出 |
 | `:disconnect <node>` | 断开指定节点 |
+| `:save` | 保存上一条命令的输出到默认目录 |
+| `:save <filename>` | 保存到默认目录，使用指定文件名 |
+| `:save <filepath>` | 保存到指定完整路径（如 `./result.txt`） |
+| `:save <name> --format <fmt>` | 指定格式保存（`text` / `structured` / `json` / `csv`） |
 | `:help` | 显示帮助信息 |
 
 ```

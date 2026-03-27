@@ -275,6 +275,10 @@ func (s *interactiveShell) dispatchExec(ctx context.Context, sessions []executor
 	// 保存本次结果，供 :save 使用
 	s.lastResult = result
 
+	// 提取 grep 搜索信息，用于高亮显示
+	grepInfo := output.ExtractGrepInfo(command)
+	colorEnabled := output.IsColorSupported()
+
 	if s.mode == output.ModeMerged {
 		var lines []executor.OutputLine
 		for _, r := range result.Results {
@@ -285,9 +289,10 @@ func (s *interactiveShell) dispatchExec(ctx context.Context, sessions []executor
 				if strings.TrimSpace(line) == "" {
 					continue
 				}
+				content := output.HighlightPatterns(line, grepInfo, colorEnabled)
 				lines = append(lines, executor.OutputLine{
 					NodeName:  r.NodeName,
-					Content:   line,
+					Content:   content,
 					Timestamp: resolveTimestamp(line),
 					IsError:   r.ExitCode != 0,
 				})
@@ -298,16 +303,36 @@ func (s *interactiveShell) dispatchExec(ctx context.Context, sessions []executor
 			fmt.Print(rendered)
 		}
 	} else {
-		rendered := s.outputAgg.RenderGrouped(result.Results)
+		// grouped 模式：对每个节点的输出内容应用高亮（不影响 lastResult 原始数据）
+		highlightedResults := highlightExecResults(result.Results, grepInfo, colorEnabled)
+		rendered := s.outputAgg.RenderGrouped(highlightedResults)
 		if rendered != "" {
 			fmt.Print(rendered)
 		}
 	}
 }
 
+// highlightExecResults 对 ExecResult 切片中的 Output 应用 grep 高亮。
+// 返回新切片，不修改原始数据。
+func highlightExecResults(results []executor.ExecResult, info output.GrepInfo, colorEnabled bool) []executor.ExecResult {
+	if !colorEnabled || len(info.Patterns) == 0 {
+		return results
+	}
+	highlighted := make([]executor.ExecResult, len(results))
+	copy(highlighted, results)
+	for i := range highlighted {
+		highlighted[i].Output = output.HighlightPatterns(highlighted[i].Output, info, colorEnabled)
+	}
+	return highlighted
+}
+
 // dispatchStream 使用 StreamOnAll 执行流式命令（stream 模式）
 func (s *interactiveShell) dispatchStream(ctx context.Context, sessions []executor.Session, command string) {
 	outputCh := make(chan executor.OutputLine, 100)
+
+	// 提取 grep 搜索信息，用于高亮显示
+	grepInfo := output.ExtractGrepInfo(command)
+	colorEnabled := output.IsColorSupported()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -316,7 +341,13 @@ func (s *interactiveShell) dispatchStream(ctx context.Context, sessions []execut
 	}()
 
 	for line := range outputCh {
-		s.outputAgg.RenderStream(line, os.Stdout)
+		if len(grepInfo.Patterns) > 0 && colorEnabled {
+			highlighted := line
+			highlighted.Content = output.HighlightPatterns(line.Content, grepInfo, colorEnabled)
+			s.outputAgg.RenderStream(highlighted, os.Stdout)
+		} else {
+			s.outputAgg.RenderStream(line, os.Stdout)
+		}
 	}
 
 	if err := <-errCh; err != nil {

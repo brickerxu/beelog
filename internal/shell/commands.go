@@ -70,6 +70,10 @@ beelog 交互式 Shell 帮助
   :save <name> --format <fmt>  指定格式保存（text/structured/json/csv）
   :help                  显示此帮助信息
 
+本地管道:
+  <远程命令> |> <本地命令>   将所有节点输出合并后，管道到本地命令处理
+                            例: tail -100 /var/log/app.log |> grep ERROR | sort
+
 快捷键:
   ↑ / ↓                  浏览历史命令
   Tab                    远程文件路径补全；:disconnect 后补全活跃节点名

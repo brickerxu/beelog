@@ -2,9 +2,11 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -221,6 +223,23 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 	}
 }
 
+// parseLocalPipeline 从命令中提取 |> 操作符，分离远程命令和本地管道。
+// 返回 (remoteCmd, localCmd, hasLocal)。
+// 只识别第一个 |>，后续 | 属于本地管道部分。
+// 若 |> 两侧任一为空，则视为不含管道，返回原始命令和 false。
+func parseLocalPipeline(command string) (string, string, bool) {
+	idx := strings.Index(command, "|>")
+	if idx < 0 {
+		return command, "", false
+	}
+	remoteCmd := strings.TrimSpace(command[:idx])
+	localCmd := strings.TrimSpace(command[idx+2:])
+	if remoteCmd == "" || localCmd == "" {
+		return command, "", false
+	}
+	return remoteCmd, localCmd, true
+}
+
 // dispatchCommand 将命令分发到所有活跃节点并展示结果
 func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, rl *readline.Instance) {
 	sessions := s.toExecutorSessions()
@@ -249,18 +268,68 @@ func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, 
 		}
 	}()
 
+	// 检测 |> 本地管道操作符
+	if remoteCmd, localCmd, ok := parseLocalPipeline(command); ok {
+		if s.mode == output.ModeStream {
+			fmt.Fprintln(os.Stderr, "提示: stream 模式不支持 |> 本地管道，请切换到 grouped 或 merged 模式")
+			return
+		}
+		s.dispatchLocalPipeline(cmdCtx, sessions, remoteCmd, localCmd)
+		return
+	}
+
 	switch s.mode {
 	case output.ModeStream:
 		s.dispatchStream(cmdCtx, sessions, command)
 	default:
 		s.dispatchExec(cmdCtx, sessions, command)
 	}
-
 	// cd 命令后刷新当前目录并更新提示符
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "cd" || strings.HasPrefix(trimmed, "cd ") {
 		s.refreshCwd()
 		rl.SetPrompt(s.prompt())
+	}
+}
+
+// dispatchLocalPipeline 先在所有节点执行 remoteCmd，收集输出后合并（无节点前缀），
+// 再将合并内容作为 stdin 传给本地 localCmd（通过 sh -c 执行）。
+// 保存远程结果到 lastResult 供 :save 使用。
+func (s *interactiveShell) dispatchLocalPipeline(ctx context.Context, sessions []executor.Session, remoteCmd, localCmd string) {
+	result, err := s.exec.ExecOnAll(ctx, sessions, remoteCmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "远程命令执行失败: %v\n", err)
+		return
+	}
+
+	// 保存远程结果，供 :save 使用
+	s.lastResult = result
+
+	// 合并所有节点输出（无节点前缀）
+	var sb strings.Builder
+	for _, r := range result.Results {
+		if r.Output == "" {
+			continue
+		}
+		sb.WriteString(r.Output)
+		if !strings.HasSuffix(r.Output, "\n") {
+			sb.WriteByte('\n')
+		}
+	}
+
+	// 执行本地命令，将合并输出作为 stdin
+	cmd := exec.CommandContext(ctx, "sh", "-c", localCmd)
+	cmd.Stdin = strings.NewReader(sb.String())
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			// 真实错误（命令不存在等），打印到 stderr
+			fmt.Fprintf(os.Stderr, "本地命令执行失败: %v\n", err)
+		}
+		// 非零退出码（如 grep 无匹配）静默处理
 	}
 }
 

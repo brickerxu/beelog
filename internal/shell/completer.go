@@ -62,6 +62,20 @@ func (c *remoteCompleter) Do(line []rune, pos int) ([][]rune, int) {
 		return c.completeNodeNames(lineStr[len(disconnectPrefix):])
 	}
 
+	// :only 命令：补全活跃节点名（支持多节点，补全最后一个）
+	const onlyPrefix = ":only "
+	if strings.HasPrefix(lineStr, onlyPrefix) {
+		// 最后一个 token 是正在输入的节点名
+		partial := lastToken(lineStr[len(onlyPrefix):])
+		return c.completeNodeNames(partial)
+	}
+
+	// :mode 命令：补全模式名
+	const modePrefix = ":mode "
+	if strings.HasPrefix(lineStr, modePrefix) {
+		return completeStaticList([]string{"grouped", "merged", "stream"}, lineStr[len(modePrefix):])
+	}
+
 	// 提取最后一个 word（即用户正在输入的路径片段）
 	lastWord := extractLastWord(lineStr)
 
@@ -376,4 +390,42 @@ func shellEscape(s string) string {
 		"|", "\\|",
 	)
 	return replacer.Replace(s)
+}
+
+// lastToken 返回空格分隔的最后一个 token（用于 :only 多节点补全）
+func lastToken(s string) string {
+	s = strings.TrimRight(s, " ")
+	if idx := strings.LastIndexByte(s, ' '); idx >= 0 {
+		return s[idx+1:]
+	}
+	return s
+}
+
+// completeStaticList 在固定候选列表中匹配 partial 前缀，返回补全后缀。
+func completeStaticList(candidates []string, partial string) ([][]rune, int) {
+	var matched []string
+	for _, c := range candidates {
+		if strings.HasPrefix(c, partial) {
+			matched = append(matched, c)
+		}
+	}
+	if len(matched) == 0 {
+		return nil, 0
+	}
+	if len(matched) == 1 {
+		suffix := matched[0][len(partial):]
+		if suffix == "" {
+			return nil, 0
+		}
+		return [][]rune{[]rune(suffix)}, 0
+	}
+	commonPrefix := longestCommonPrefix(matched)
+	if len(commonPrefix) > len(partial) {
+		return [][]rune{[]rune(commonPrefix[len(partial):])}, 0
+	}
+	result := make([][]rune, len(matched))
+	for i, m := range matched {
+		result[i] = []rune(m[len(partial):])
+	}
+	return result, len([]rune(partial))
 }

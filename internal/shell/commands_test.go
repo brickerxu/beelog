@@ -65,6 +65,10 @@ func (m *testSessionManager) GetActiveSessions() []*ssh.NodeSession {
 	return m.sessions
 }
 
+func (m *testSessionManager) GetAllSessions() []*ssh.NodeSession {
+	return m.sessions
+}
+
 func (m *testSessionManager) DisconnectNode(nodeName string) error {
 	m.disconnectedNodes = append(m.disconnectedNodes, nodeName)
 	return m.disconnectErr

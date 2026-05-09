@@ -17,6 +17,10 @@ func (m *mockSessionManager) GetActiveSessions() []*ssh.NodeSession {
 	return m.sessions
 }
 
+func (m *mockSessionManager) GetAllSessions() []*ssh.NodeSession {
+	return m.sessions
+}
+
 func (m *mockSessionManager) DisconnectNode(nodeName string) error {
 	return nil
 }

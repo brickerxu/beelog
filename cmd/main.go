@@ -316,6 +316,15 @@ func (m *sessionManager) GetActiveSessions() []*ssh.NodeSession {
 	return active
 }
 
+// GetAllSessions 返回所有会话（含已断开的）
+func (m *sessionManager) GetAllSessions() []*ssh.NodeSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]*ssh.NodeSession, len(m.sessions))
+	copy(result, m.sessions)
+	return result
+}
+
 // DisconnectNode 断开指定节点的连接
 func (m *sessionManager) DisconnectNode(nodeName string) error {
 	m.mu.Lock()

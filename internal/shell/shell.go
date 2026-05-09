@@ -39,6 +39,7 @@ type interactiveShell struct {
 	cwd        string                // 远程节点当前工作目录
 	lastResult *executor.BatchResult // 上一条命令的执行结果
 	saveCfg    saver.Config          // 保存配置
+	onlyNodes  map[string]bool       // nil = 全部节点；非 nil = :only 设置的子集
 }
 
 // NewInteractiveShell 创建交互式 shell 实例
@@ -87,6 +88,7 @@ func NewInteractiveShellWithDebug(
 }
 
 // prompt 返回当前提示符，包含分组名、活跃节点数和当前目录（带颜色）
+// 当 :only 过滤器生效时显示 group:filtered/total 格式。
 func (s *interactiveShell) prompt() string {
 	active := s.sessMgr.GetActiveSessions()
 	const (
@@ -94,10 +96,22 @@ func (s *interactiveShell) prompt() string {
 		cyan  = "\033[1;36m"
 		reset = "\033[0m"
 	)
-	if s.cwd != "" {
-		return fmt.Sprintf("%sbeelog%s [%s:%d] %s%s%s> ", green, reset, s.group, len(active), cyan, s.cwd, reset)
+	var nodeInfo string
+	if s.onlyNodes != nil {
+		count := 0
+		for _, ns := range active {
+			if s.onlyNodes[ns.NodeName] {
+				count++
+			}
+		}
+		nodeInfo = fmt.Sprintf("%s:%d/%d", s.group, count, len(active))
+	} else {
+		nodeInfo = fmt.Sprintf("%s:%d", s.group, len(active))
 	}
-	return fmt.Sprintf("%sbeelog%s [%s:%d]> ", green, reset, s.group, len(active))
+	if s.cwd != "" {
+		return fmt.Sprintf("%sbeelog%s [%s] %s%s%s> ", green, reset, nodeInfo, cyan, s.cwd, reset)
+	}
+	return fmt.Sprintf("%sbeelog%s [%s]> ", green, reset, nodeInfo)
 }
 
 // refreshCwd 在远程节点上执行 pwd 获取当前工作目录
@@ -115,14 +129,58 @@ func (s *interactiveShell) refreshCwd() {
 	s.cwd = strings.TrimSpace(result.Output)
 }
 
-// toExecutorSessions 将 []*ssh.NodeSession 转换为 []executor.Session
-func (s *interactiveShell) toExecutorSessions() []executor.Session {
+// getTargetSessions 返回本次命令的目标会话。
+// overrideNodes 非空时只选这些节点（来自 @node1,node2 前缀）；
+// 否则应用 onlyNodes 过滤器；否则返回全部活跃节点。
+func (s *interactiveShell) getTargetSessions(overrideNodes []string) []executor.Session {
 	nodeSessions := s.sessMgr.GetActiveSessions()
-	sessions := make([]executor.Session, len(nodeSessions))
-	for i, ns := range nodeSessions {
-		sessions[i] = ns
+	filter := s.onlyNodes
+	if len(overrideNodes) > 0 {
+		filter = make(map[string]bool, len(overrideNodes))
+		for _, n := range overrideNodes {
+			filter[n] = true
+		}
+	}
+	if filter == nil {
+		sessions := make([]executor.Session, len(nodeSessions))
+		for i, ns := range nodeSessions {
+			sessions[i] = ns
+		}
+		return sessions
+	}
+	var sessions []executor.Session
+	for _, ns := range nodeSessions {
+		if filter[ns.NodeName] {
+			sessions = append(sessions, ns)
+		}
 	}
 	return sessions
+}
+
+// parseNodePrefix 解析 @node1,node2 前缀，返回节点列表和实际命令。
+// 输入不含前缀时返回 ok=false。
+func parseNodePrefix(input string) (nodes []string, command string, ok bool) {
+	if !strings.HasPrefix(input, "@") {
+		return nil, input, false
+	}
+	spaceIdx := strings.IndexByte(input, ' ')
+	if spaceIdx < 0 {
+		return nil, input, false
+	}
+	nodeStr := input[1:spaceIdx]
+	cmd := strings.TrimSpace(input[spaceIdx+1:])
+	if nodeStr == "" || cmd == "" {
+		return nil, input, false
+	}
+	for _, part := range strings.Split(nodeStr, ",") {
+		if n := strings.TrimSpace(part); n != "" {
+			nodes = append(nodes, n)
+		}
+	}
+	if len(nodes) == 0 {
+		return nil, input, false
+	}
+	return nodes, cmd, true
 }
 
 // isSessionCommand 检查输入是否为会话管理命令（以 : 开头）
@@ -200,14 +258,25 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 			if cmd == "" {
 				continue
 			}
-			// :save 需要访问 lastResult，在 shell 层直接处理
-			if cmd == "save" {
-				msg := s.handleSave(args)
-				fmt.Fprintln(os.Stderr, msg)
-				rl.SetPrompt(s.prompt())
-				continue
+			var msg string
+			var quit bool
+			switch cmd {
+			case "save":
+				msg = s.handleSave(args)
+			case "diff":
+				msg = s.handleDiff()
+			case "mode":
+				msg = s.handleMode(args)
+			case "only":
+				msg = s.handleOnly(args)
+			case "all":
+				s.onlyNodes = nil
+				msg = "已恢复全部节点"
+			case "nodes":
+				msg = s.handleNodes()
+			default:
+				quit, msg = HandleSessionCommand(cmd, args, s.sessMgr)
 			}
-			quit, msg := HandleSessionCommand(cmd, args, s.sessMgr)
 			if msg != "" {
 				fmt.Fprintln(os.Stderr, msg)
 			}
@@ -240,18 +309,36 @@ func parseLocalPipeline(command string) (string, string, bool) {
 	return remoteCmd, localCmd, true
 }
 
-// dispatchCommand 将命令分发到所有活跃节点并展示结果
+// dispatchCommand 将命令分发到目标节点并展示结果。
+// 支持 @node1,node2 前缀临时指定目标节点。
 func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, rl *readline.Instance) {
-	sessions := s.toExecutorSessions()
+	// 解析 @node1,node2 前缀
+	var overrideNodes []string
+	if nodes, cmd, ok := parseNodePrefix(command); ok {
+		overrideNodes = nodes
+		command = cmd
+	}
+
+	sessions := s.getTargetSessions(overrideNodes)
 	if len(sessions) == 0 {
-		fmt.Fprintln(os.Stderr, "没有活跃的节点连接")
+		if len(overrideNodes) > 0 {
+			fmt.Fprintf(os.Stderr, "节点 [%s] 未找到或已断开\n", strings.Join(overrideNodes, ", "))
+		} else if s.onlyNodes != nil {
+			fmt.Fprintln(os.Stderr, "限定的节点均已断开，执行 :all 恢复全部节点")
+		} else {
+			fmt.Fprintln(os.Stderr, "没有活跃的节点连接")
+		}
 		return
 	}
 
-	// 用亮黄色打印正在执行的命令
+	// 用亮黄色打印正在执行的命令（含节点前缀提示）
 	const yellow = "\033[1;33m"
 	const reset = "\033[0m"
-	fmt.Fprintf(os.Stdout, "%s$ %s%s\n", yellow, command, reset)
+	if len(overrideNodes) > 0 {
+		fmt.Fprintf(os.Stdout, "%s$ @%s %s%s\n", yellow, strings.Join(overrideNodes, ","), command, reset)
+	} else {
+		fmt.Fprintf(os.Stdout, "%s$ %s%s\n", yellow, command, reset)
+	}
 
 	cmdCtx, cmdCancel := context.WithCancel(ctx)
 	defer cmdCancel()
@@ -518,4 +605,119 @@ func (s *interactiveShell) handleSave(args []string) string {
 		return fmt.Sprintf("保存失败: %v", err)
 	}
 	return fmt.Sprintf("已保存到: %s", filePath)
+}
+
+// handleDiff 处理 :diff 命令，对上一条命令的结果做节点间逐行对比。
+func (s *interactiveShell) handleDiff() string {
+	if s.lastResult == nil {
+		return "没有可对比的内容，请先执行一条命令"
+	}
+	fmt.Print(output.RenderDiff(s.lastResult, output.IsColorSupported()))
+	return ""
+}
+
+// handleMode 处理 :mode 命令，动态切换输出模式。
+func (s *interactiveShell) handleMode(args []string) string {
+	if len(args) == 0 {
+		return fmt.Sprintf("当前模式: %s\n用法: :mode grouped|merged|stream", s.mode)
+	}
+	newMode := output.OutputMode(strings.ToLower(args[0]))
+	switch newMode {
+	case output.ModeGrouped, output.ModeMerged, output.ModeStream:
+		s.mode = newMode
+		return fmt.Sprintf("已切换到 %s 模式", newMode)
+	default:
+		return fmt.Sprintf("未知模式: %s，可用模式: grouped merged stream", args[0])
+	}
+}
+
+// handleOnly 处理 :only 命令，将命令目标限定到指定节点子集。
+func (s *interactiveShell) handleOnly(args []string) string {
+	if len(args) == 0 {
+		return "用法: :only <node1> [node2 ...]\n输入 :all 恢复全部节点"
+	}
+	active := s.sessMgr.GetActiveSessions()
+	activeMap := make(map[string]bool, len(active))
+	for _, ns := range active {
+		activeMap[ns.NodeName] = true
+	}
+	filter := make(map[string]bool, len(args))
+	var unknown []string
+	for _, n := range args {
+		filter[n] = true
+		if !activeMap[n] {
+			unknown = append(unknown, n)
+		}
+	}
+	s.onlyNodes = filter
+	msg := fmt.Sprintf("已限定节点: %s", strings.Join(args, ", "))
+	if len(unknown) > 0 {
+		msg += fmt.Sprintf("\n警告: 以下节点不在活跃连接中: %s", strings.Join(unknown, ", "))
+	}
+	return msg
+}
+
+// handleNodes 处理 :nodes 命令，列出所有节点及其连接状态。
+func (s *interactiveShell) handleNodes() string {
+	all := s.sessMgr.GetAllSessions()
+	if len(all) == 0 {
+		return "没有节点"
+	}
+
+	colorEnabled := output.IsColorSupported()
+	const (
+		colorGreen  = "\033[32m"
+		colorRed    = "\033[31m"
+		colorYellow = "\033[33m"
+		colorGray   = "\033[90m"
+		reset       = "\033[0m"
+	)
+
+	active := 0
+	for _, ns := range all {
+		if !ns.IsDisconnected() {
+			active++
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("节点列表 (%d 个, 活跃 %d 个)", len(all), active))
+	if s.onlyNodes != nil {
+		sb.WriteString(fmt.Sprintf(", :only 限定 %d 个", len(s.onlyNodes)))
+	}
+	sb.WriteString(":\n")
+
+	for _, ns := range all {
+		disconnected := ns.IsDisconnected()
+		inOnly := s.onlyNodes != nil && s.onlyNodes[ns.NodeName]
+
+		var line string
+		if disconnected {
+			reason := ""
+			if err := ns.GetDisconnectErr(); err != nil {
+				reason = fmt.Sprintf("  (%s)", err.Error())
+			}
+			if colorEnabled {
+				line = fmt.Sprintf("  %s✗ %-20s%s%s%s\n",
+					colorRed, ns.NodeName, reset, colorGray, reason+reset)
+			} else {
+				line = fmt.Sprintf("  ✗ %-20s [已断开%s]\n", ns.NodeName, reason)
+			}
+		} else if inOnly {
+			if colorEnabled {
+				line = fmt.Sprintf("  %s✓ %-20s%s%s← 限定中%s\n",
+					colorGreen, ns.NodeName, reset, colorYellow, reset)
+			} else {
+				line = fmt.Sprintf("  ✓ %-20s ← 限定中\n", ns.NodeName)
+			}
+		} else {
+			if colorEnabled {
+				line = fmt.Sprintf("  %s✓ %s%s\n", colorGreen, ns.NodeName, reset)
+			} else {
+				line = fmt.Sprintf("  ✓ %s\n", ns.NodeName)
+			}
+		}
+		sb.WriteString(line)
+	}
+	return sb.String()
 }

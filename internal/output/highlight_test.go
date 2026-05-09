@@ -119,6 +119,46 @@ func TestExtractGrepInfo_UnquotedPattern(t *testing.T) {
 	}
 }
 
+func TestExtractGrepInfo_Egrep(t *testing.T) {
+	info := ExtractGrepInfo(`egrep "error|warn" app.log`)
+	if len(info.Patterns) != 1 || info.Patterns[0] != "error|warn" {
+		t.Errorf("expected [error|warn], got %v", info.Patterns)
+	}
+}
+
+func TestExtractGrepInfo_EgrepPiped(t *testing.T) {
+	info := ExtractGrepInfo(`cat app.log | egrep "ERROR"`)
+	if len(info.Patterns) != 1 || info.Patterns[0] != "ERROR" {
+		t.Errorf("expected [ERROR], got %v", info.Patterns)
+	}
+}
+
+func TestExtractGrepInfo_EgrepCaseInsensitive(t *testing.T) {
+	info := ExtractGrepInfo(`egrep -i "warn" app.log`)
+	if len(info.Patterns) != 1 || info.Patterns[0] != "warn" {
+		t.Errorf("expected [warn], got %v", info.Patterns)
+	}
+	if !info.CaseInsensitive {
+		t.Error("expected case-insensitive")
+	}
+}
+
+func TestExtractGrepInfo_Fgrep(t *testing.T) {
+	// fgrep treats pattern as literal string; special regex chars must be escaped
+	info := ExtractGrepInfo(`fgrep "1.2.3.4" app.log`)
+	if len(info.Patterns) != 1 || info.Patterns[0] != `1\.2\.3\.4` {
+		t.Errorf("expected [1\\.2\\.3\\.4] (escaped), got %v", info.Patterns)
+	}
+}
+
+func TestExtractGrepInfo_GrepFixedStrings(t *testing.T) {
+	// grep -F behaves like fgrep
+	info := ExtractGrepInfo(`grep -F "1.2.3.4" app.log`)
+	if len(info.Patterns) != 1 || info.Patterns[0] != `1\.2\.3\.4` {
+		t.Errorf("expected [1\\.2\\.3\\.4] (escaped), got %v", info.Patterns)
+	}
+}
+
 func TestExtractGrepInfo_SingleQuotedPattern(t *testing.T) {
 	info := ExtractGrepInfo(`grep 'ERROR' app.log`)
 	if len(info.Patterns) != 1 || info.Patterns[0] != "ERROR" {

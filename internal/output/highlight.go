@@ -15,11 +15,12 @@ type GrepInfo struct {
 // It collects patterns from ALL grep segments in a pipeline, so that
 // commands like "grep 206092 | grep 正常IP" highlight both patterns.
 // Returns GrepInfo with empty Patterns if no grep is found or all greps use -v.
+// Supports grep, egrep, and fgrep variants.
 func ExtractGrepInfo(command string) GrepInfo {
 	var combined GrepInfo
 	for _, part := range splitPipes(command) {
 		t := strings.TrimSpace(part)
-		if !(t == "grep" || strings.HasPrefix(t, "grep ") || strings.HasPrefix(t, "grep\t")) {
+		if !isGrepCommand(t) {
 			continue
 		}
 		info := parseGrepCommand(t)
@@ -29,6 +30,17 @@ func ExtractGrepInfo(command string) GrepInfo {
 		}
 	}
 	return combined
+}
+
+// isGrepCommand reports whether s starts with grep, egrep, or fgrep
+// (as a standalone command or followed by a space/tab).
+func isGrepCommand(s string) bool {
+	for _, cmd := range []string{"grep", "egrep", "fgrep"} {
+		if s == cmd || strings.HasPrefix(s, cmd+" ") || strings.HasPrefix(s, cmd+"\t") {
+			return true
+		}
+	}
+	return false
 }
 
 // HighlightPatterns applies ANSI cyan-bold highlighting to all occurrences
@@ -141,14 +153,15 @@ func splitPipes(command string) []string {
 	return parts
 }
 
-// parseGrepCommand parses a single grep command string (starting with "grep")
+// parseGrepCommand parses a single grep command string (starting with grep/egrep/fgrep)
 // to extract search patterns and relevant flags.
 func parseGrepCommand(cmd string) GrepInfo {
 	tokens := shellTokenize(cmd)
 	if len(tokens) == 0 {
 		return GrepInfo{}
 	}
-	// tokens[0] is "grep"
+	// tokens[0] is "grep", "egrep", or "fgrep"
+	fixedStrings := tokens[0] == "fgrep"
 
 	var info GrepInfo
 	invertMatch := false
@@ -184,6 +197,8 @@ func parseGrepCommand(cmd string) GrepInfo {
 				info.CaseInsensitive = true
 			case 'v':
 				invertMatch = true
+			case 'F':
+				fixedStrings = true
 			case 'e':
 				// -e: the pattern follows — either as the rest of this token or next token
 				if j+1 < len(flagStr) {
@@ -217,6 +232,12 @@ func parseGrepCommand(cmd string) GrepInfo {
 
 	if invertMatch {
 		return GrepInfo{} // -v: no highlighting
+	}
+	// fgrep / grep -F: patterns are literal strings, escape regex metacharacters
+	if fixedStrings {
+		for k, p := range info.Patterns {
+			info.Patterns[k] = regexp.QuoteMeta(p)
+		}
 	}
 	return info
 }

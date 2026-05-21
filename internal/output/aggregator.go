@@ -69,7 +69,7 @@ func (o *outputAggregator) RenderMerged(lines []executor.OutputLine) string {
 
 // RenderStream 实时流式展示，写入单行到 writer，带节点名称前缀
 func (o *outputAggregator) RenderStream(line executor.OutputLine, writer io.Writer) error {
-	_, err := fmt.Fprintf(writer, "[%s] %s\n", line.NodeName, line.Content)
+	_, err := fmt.Fprintf(writer, "[%s] %s\n", o.colors.Colorize(line.NodeName, line.NodeName), line.Content)
 	return err
 }
 

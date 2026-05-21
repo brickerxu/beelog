@@ -365,7 +365,13 @@ func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, 
 		return
 	}
 
-	switch s.mode {
+	effectiveMode := s.mode
+	if effectiveMode != output.ModeStream && requiresStreamMode(command) {
+		fmt.Fprintln(os.Stderr, "检测到持续输出命令，自动切换到 stream 模式")
+		effectiveMode = output.ModeStream
+	}
+
+	switch effectiveMode {
 	case output.ModeStream:
 		s.dispatchStream(cmdCtx, sessions, command)
 	default:
@@ -655,6 +661,37 @@ func (s *interactiveShell) handleOnly(args []string) string {
 		msg += fmt.Sprintf("\n警告: 以下节点不在活跃连接中: %s", strings.Join(unknown, ", "))
 	}
 	return msg
+}
+
+// requiresStreamMode 检测命令是否需要流式输出模式。
+// 匹配 tail -f/-F/--follow 和 watch 命令。
+func requiresStreamMode(command string) bool {
+	cmd := strings.TrimSpace(command)
+	// 只取第一个管道前的部分检测
+	if idx := strings.IndexByte(cmd, '|'); idx >= 0 {
+		cmd = strings.TrimSpace(cmd[:idx])
+	}
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return false
+	}
+	switch parts[0] {
+	case "watch":
+		return true
+	case "tail":
+		for _, p := range parts[1:] {
+			if p == "--follow" || p == "-f" || p == "-F" {
+				return true
+			}
+			// 合并短标志，如 -fn、-Fn
+			if strings.HasPrefix(p, "-") && !strings.HasPrefix(p, "--") {
+				if strings.ContainsAny(p[1:], "fF") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // handleNodes 处理 :nodes 命令，列出所有节点及其连接状态。

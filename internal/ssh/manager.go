@@ -426,9 +426,63 @@ func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, comma
 		return fmt.Errorf("[%s] 发送流式命令失败: %w", session.NodeName, err)
 	}
 
-	// 使用字节级读取处理 PTY 输出
-	readBuf := make([]byte, 4096)
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	readCh := make(chan readResult, 1)
+
+	// 在独立 goroutine 中做阻塞读，避免 Read() 阻塞时无法响应 ctx 取消
+	go func() {
+		readBuf := make([]byte, 4096)
+		for {
+			n, err := session.Stdout.Read(readBuf)
+			var data []byte
+			if n > 0 {
+				data = make([]byte, n)
+				copy(data, readBuf[:n])
+			}
+			readCh <- readResult{data: data, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	var lineBuf bytes.Buffer
+	processBytes := func(data []byte) {
+		for _, b := range data {
+			if b == '\n' {
+				line := strings.TrimRight(lineBuf.String(), "\r")
+				lineBuf.Reset()
+
+				// 过滤：ANSI 转义、命令回显、marker 行、shell 提示符
+				cleaned := stripAllEscapes(line)
+				cleaned = strings.TrimRight(cleaned, " \t")
+				if cleaned == "" {
+					return
+				}
+				if strings.Contains(cleaned, "__BEELOG_END_") {
+					return
+				}
+				if isCommandEcho(cleaned, command) {
+					return
+				}
+				if isShellPrompt(cleaned) {
+					return
+				}
+
+				output <- executor.OutputLine{
+					NodeName:  session.NodeName,
+					Content:   cleaned,
+					Timestamp: resolveTimestamp(cleaned),
+					IsError:   false,
+				}
+			} else {
+				lineBuf.WriteByte(b)
+			}
+		}
+	}
 
 	for {
 		select {
@@ -436,62 +490,29 @@ func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, comma
 			// 发送 Ctrl+C 终止远程命令
 			session.Stdin.Write([]byte{0x03}) // ETX (Ctrl+C)
 			return ctx.Err()
-		default:
-		}
-
-		n, err := session.Stdout.Read(readBuf)
-		if n > 0 {
-			for i := 0; i < n; i++ {
-				b := readBuf[i]
-				if b == '\n' {
-					line := strings.TrimRight(lineBuf.String(), "\r")
-					lineBuf.Reset()
-
-					// 过滤：ANSI 转义、命令回显、marker 行、shell 提示符
-					cleaned := stripAllEscapes(line)
-					cleaned = strings.TrimRight(cleaned, " \t")
-					if cleaned == "" {
-						continue
-					}
-					if strings.Contains(cleaned, "__BEELOG_END_") {
-						continue
-					}
-					if isCommandEcho(cleaned, command) {
-						continue
-					}
-					if isShellPrompt(cleaned) {
-						continue
-					}
-
-					output <- executor.OutputLine{
-						NodeName:  session.NodeName,
-						Content:   cleaned,
-						Timestamp: resolveTimestamp(cleaned),
-						IsError:   false,
-					}
-				} else {
-					lineBuf.WriteByte(b)
-				}
+		case r := <-readCh:
+			if len(r.data) > 0 {
+				processBytes(r.data)
 			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				// 输出剩余缓冲
-				if lineBuf.Len() > 0 {
-					line := strings.TrimRight(lineBuf.String(), "\r")
-					cleaned := stripAllEscapes(line)
-					if cleaned != "" && !strings.Contains(cleaned, "__BEELOG_END_") && !isCommandEcho(cleaned, command) && !isShellPrompt(cleaned) {
-						output <- executor.OutputLine{
-							NodeName:  session.NodeName,
-							Content:   cleaned,
-							Timestamp: resolveTimestamp(cleaned),
-							IsError:   false,
+			if r.err != nil {
+				if r.err == io.EOF {
+					// 输出剩余缓冲
+					if lineBuf.Len() > 0 {
+						line := strings.TrimRight(lineBuf.String(), "\r")
+						cleaned := stripAllEscapes(line)
+						if cleaned != "" && !strings.Contains(cleaned, "__BEELOG_END_") && !isCommandEcho(cleaned, command) && !isShellPrompt(cleaned) {
+							output <- executor.OutputLine{
+								NodeName:  session.NodeName,
+								Content:   cleaned,
+								Timestamp: resolveTimestamp(cleaned),
+								IsError:   false,
+							}
 						}
 					}
+					return nil
 				}
-				return nil
+				return fmt.Errorf("[%s] 读取流式输出失败: %w", session.NodeName, r.err)
 			}
-			return fmt.Errorf("[%s] 读取流式输出失败: %w", session.NodeName, err)
 		}
 	}
 }

@@ -430,10 +430,15 @@ func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, comma
 		data []byte
 		err  error
 	}
+	// stopCh 用于通知读取 goroutine 停止向 readCh 发送数据
+	stopCh := make(chan struct{})
 	readCh := make(chan readResult, 1)
+	doneCh := make(chan struct{})
 
-	// 在独立 goroutine 中做阻塞读，避免 Read() 阻塞时无法响应 ctx 取消
+	// 在独立 goroutine 中做阻塞读，避免 Read() 阻塞时无法响应 ctx 取消。
+	// 通过 stopCh 协调退出：ctx 取消时主循环关闭 stopCh，goroutine 下次发送前感知并退出。
 	go func() {
+		defer close(doneCh)
 		readBuf := make([]byte, 4096)
 		for {
 			n, err := session.Stdout.Read(readBuf)
@@ -442,7 +447,11 @@ func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, comma
 				data = make([]byte, n)
 				copy(data, readBuf[:n])
 			}
-			readCh <- readResult{data: data, err: err}
+			select {
+			case readCh <- readResult{data: data, err: err}:
+			case <-stopCh:
+				return
+			}
 			if err != nil {
 				return
 			}
@@ -450,49 +459,43 @@ func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, comma
 	}()
 
 	var lineBuf bytes.Buffer
-	processBytes := func(data []byte) {
-		for _, b := range data {
-			if b == '\n' {
-				line := strings.TrimRight(lineBuf.String(), "\r")
-				lineBuf.Reset()
-
-				// 过滤：ANSI 转义、命令回显、marker 行、shell 提示符
-				cleaned := stripAllEscapes(line)
-				cleaned = strings.TrimRight(cleaned, " \t")
-				if cleaned == "" {
-					return
-				}
-				if strings.Contains(cleaned, "__BEELOG_END_") {
-					return
-				}
-				if isCommandEcho(cleaned, command) {
-					return
-				}
-				if isShellPrompt(cleaned) {
-					return
-				}
-
-				output <- executor.OutputLine{
-					NodeName:  session.NodeName,
-					Content:   cleaned,
-					Timestamp: resolveTimestamp(cleaned),
-					IsError:   false,
-				}
-			} else {
-				lineBuf.WriteByte(b)
-			}
-		}
-	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			// 发送 Ctrl+C 终止远程命令
 			session.Stdin.Write([]byte{0x03}) // ETX (Ctrl+C)
+			// 关闭 stopCh，解除 goroutine 在 readCh 上的阻塞，让其退出
+			close(stopCh)
+			// 等待 goroutine 退出，避免残留 goroutine 与下一条命令竞争 stdout
+			select {
+			case <-doneCh:
+			case <-time.After(2 * time.Second):
+			}
 			return ctx.Err()
 		case r := <-readCh:
-			if len(r.data) > 0 {
-				processBytes(r.data)
+			for _, b := range r.data {
+				if b == '\n' {
+					line := strings.TrimRight(lineBuf.String(), "\r")
+					lineBuf.Reset()
+
+					// 过滤：ANSI 转义、命令回显、marker 行、shell 提示符
+					cleaned := stripAllEscapes(line)
+					cleaned = strings.TrimRight(cleaned, " \t")
+					if cleaned == "" || strings.Contains(cleaned, "__BEELOG_END_") ||
+						isCommandEcho(cleaned, command) || isShellPrompt(cleaned) {
+						continue
+					}
+
+					output <- executor.OutputLine{
+						NodeName:  session.NodeName,
+						Content:   cleaned,
+						Timestamp: resolveTimestamp(cleaned),
+						IsError:   false,
+					}
+				} else {
+					lineBuf.WriteByte(b)
+				}
 			}
 			if r.err != nil {
 				if r.err == io.EOF {

@@ -365,16 +365,15 @@ func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, 
 		return
 	}
 
-	effectiveMode := s.mode
-	if effectiveMode != output.ModeStream && requiresStreamMode(command) {
-		fmt.Fprintln(os.Stderr, "检测到持续输出命令，自动切换到 stream 模式")
-		effectiveMode = output.ModeStream
-	}
-
-	switch effectiveMode {
-	case output.ModeStream:
+	// 只有明确需要持续输出的命令（tail -f、watch 等）才走 stream 模式；
+	// 即使用户当前处于 stream 模式，cat/grep 等会自然结束的命令仍走 Execute，
+	// 否则 Stream() 无法感知命令完成，会一直阻塞。
+	if requiresStreamMode(command) {
+		if s.mode != output.ModeStream {
+			fmt.Fprintln(os.Stderr, "检测到持续输出命令，自动切换到 stream 模式")
+		}
 		s.dispatchStream(cmdCtx, sessions, command)
-	default:
+	} else {
 		s.dispatchExec(cmdCtx, sessions, command)
 	}
 	// cd 命令后刷新当前目录并更新提示符

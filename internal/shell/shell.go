@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -40,6 +41,7 @@ type interactiveShell struct {
 	lastResult *executor.BatchResult // 上一条命令的执行结果
 	saveCfg    saver.Config          // 保存配置
 	onlyNodes  map[string]bool       // nil = 全部节点；非 nil = :only 设置的子集
+	promptIdle atomic.Bool           // true 表示 readline 处于空闲等待输入，可安全刷新时钟
 }
 
 // NewInteractiveShell 创建交互式 shell 实例
@@ -87,15 +89,17 @@ func NewInteractiveShellWithDebug(
 	}
 }
 
-// prompt 返回当前提示符，包含分组名、活跃节点数和当前目录（带颜色）
+// prompt 返回当前提示符，包含实时时钟、分组名、活跃节点数和当前目录（带颜色）
 // 当 :only 过滤器生效时显示 group:filtered/total 格式。
 func (s *interactiveShell) prompt() string {
 	active := s.sessMgr.GetActiveSessions()
 	const (
 		green = "\033[1;32m"
 		cyan  = "\033[1;36m"
+		gray  = "\033[90m"
 		reset = "\033[0m"
 	)
+	clock := fmt.Sprintf("%s[%s]%s ", gray, time.Now().Format("15:04:05"), reset)
 	var nodeInfo string
 	if s.onlyNodes != nil {
 		count := 0
@@ -109,9 +113,9 @@ func (s *interactiveShell) prompt() string {
 		nodeInfo = fmt.Sprintf("%s:%d", s.group, len(active))
 	}
 	if s.cwd != "" {
-		return fmt.Sprintf("%sbeelog%s [%s] %s%s%s> ", green, reset, nodeInfo, cyan, s.cwd, reset)
+		return fmt.Sprintf("%s%sbeelog%s [%s] %s%s%s> ", clock, green, reset, nodeInfo, cyan, s.cwd, reset)
 	}
-	return fmt.Sprintf("%sbeelog%s [%s]> ", green, reset, nodeInfo)
+	return fmt.Sprintf("%s%sbeelog%s [%s]> ", clock, green, reset, nodeInfo)
 }
 
 // refreshCwd 在远程节点上执行 pwd 获取当前工作目录
@@ -220,6 +224,26 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 	}
 	defer rl.Close()
 
+	// 每秒刷新 prompt 上的实时时钟；仅在 readline 空闲等待输入时刷新，
+	// 命令执行期间跳过以免与输出竞争。
+	clockStop := make(chan struct{})
+	defer close(clockStop)
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-clockStop:
+				return
+			case <-ticker.C:
+				if s.promptIdle.Load() {
+					rl.SetPrompt(s.prompt())
+					rl.Refresh()
+				}
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -236,7 +260,9 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 			return nil
 		}
 
+		s.promptIdle.Store(true)
 		line, err := rl.Readline()
+		s.promptIdle.Store(false)
 		if err != nil {
 			if err == io.EOF {
 				return nil
@@ -331,13 +357,10 @@ func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, 
 		return
 	}
 
-	// 用亮黄色打印正在执行的命令（含节点前缀提示）
-	const yellow = "\033[1;33m"
-	const reset = "\033[0m"
+	// 命令回显文本，含 @node 前缀提示
+	displayCmd := command
 	if len(overrideNodes) > 0 {
-		fmt.Fprintf(os.Stdout, "%s$ @%s %s%s\n", yellow, strings.Join(overrideNodes, ","), command, reset)
-	} else {
-		fmt.Fprintf(os.Stdout, "%s$ %s%s\n", yellow, command, reset)
+		displayCmd = fmt.Sprintf("@%s %s", strings.Join(overrideNodes, ","), command)
 	}
 
 	cmdCtx, cmdCancel := context.WithCancel(ctx)
@@ -361,7 +384,7 @@ func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, 
 			fmt.Fprintln(os.Stderr, "提示: stream 模式不支持 |> 本地管道，请切换到 grouped 或 merged 模式")
 			return
 		}
-		s.dispatchLocalPipeline(cmdCtx, sessions, remoteCmd, localCmd)
+		s.dispatchLocalPipeline(cmdCtx, sessions, remoteCmd, localCmd, displayCmd)
 		return
 	}
 
@@ -372,9 +395,9 @@ func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, 
 		if s.mode != output.ModeStream {
 			fmt.Fprintln(os.Stderr, "检测到持续输出命令，自动切换到 stream 模式")
 		}
-		s.dispatchStream(cmdCtx, sessions, command)
+		s.dispatchStream(cmdCtx, sessions, command, displayCmd)
 	} else {
-		s.dispatchExec(cmdCtx, sessions, command)
+		s.dispatchExec(cmdCtx, sessions, command, displayCmd)
 	}
 	// cd 命令后刷新当前目录并更新提示符
 	trimmed := strings.TrimSpace(command)
@@ -384,11 +407,56 @@ func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, 
 	}
 }
 
+// startLiveCommandLine 打印黄色 `$ cmd  [⏱ 0s]` 行（不换行）并起 goroutine 每 500ms
+// 覆盖刷新读秒。返回的 finalize 必须在任何其它 stdout 写入前调用：它会以最终耗时
+// 覆盖读秒并补一个换行，同时等待 ticker goroutine 退出。
+func startLiveCommandLine(displayCmd string) func(final time.Duration) {
+	const (
+		yellow = "\033[1;33m"
+		gray   = "\033[90m"
+		reset  = "\033[0m"
+	)
+	prefix := fmt.Sprintf("%s$ %s%s", yellow, displayCmd, reset)
+	start := time.Now()
+
+	fmt.Fprintf(os.Stdout, "%s  %s[⏱ 0s]%s", prefix, gray, reset)
+
+	done := make(chan time.Duration, 1)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case d := <-done:
+				fmt.Fprintf(os.Stdout, "\r\033[K%s  %s[⏱ %s]%s\n",
+					prefix, gray, output.FormatBriefDuration(d), reset)
+				return
+			case <-ticker.C:
+				fmt.Fprintf(os.Stdout, "\r\033[K%s  %s[⏱ %s]%s",
+					prefix, gray, output.FormatBriefDuration(time.Since(start)), reset)
+			}
+		}
+	}()
+
+	return func(final time.Duration) {
+		done <- final
+		<-stopped
+	}
+}
+
 // dispatchLocalPipeline 先在所有节点执行 remoteCmd，收集输出后合并（无节点前缀），
 // 再将合并内容作为 stdin 传给本地 localCmd（通过 sh -c 执行）。
 // 保存远程结果到 lastResult 供 :save 使用。
-func (s *interactiveShell) dispatchLocalPipeline(ctx context.Context, sessions []executor.Session, remoteCmd, localCmd string) {
+func (s *interactiveShell) dispatchLocalPipeline(ctx context.Context, sessions []executor.Session, remoteCmd, localCmd, displayCmd string) {
+	finalize := startLiveCommandLine(displayCmd)
 	result, err := s.exec.ExecOnAll(ctx, sessions, remoteCmd)
+	if result != nil {
+		finalize(result.Summary.Duration)
+	} else {
+		finalize(0)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "远程命令执行失败: %v\n", err)
 		return
@@ -423,11 +491,22 @@ func (s *interactiveShell) dispatchLocalPipeline(ctx context.Context, sessions [
 		}
 		// 非零退出码（如 grep 无匹配）静默处理
 	}
+
+	// 打印远程部分的耗时汇总（本地管道不计入）
+	if summary := output.FormatDurationSummary(result.Results, result.Summary.Duration, output.IsColorSupported()); summary != "" {
+		fmt.Print(summary)
+	}
 }
 
 // dispatchExec 使用 ExecOnAll 执行命令并展示结果（grouped/merged 模式）
-func (s *interactiveShell) dispatchExec(ctx context.Context, sessions []executor.Session, command string) {
+func (s *interactiveShell) dispatchExec(ctx context.Context, sessions []executor.Session, command, displayCmd string) {
+	finalize := startLiveCommandLine(displayCmd)
 	result, err := s.exec.ExecOnAll(ctx, sessions, command)
+	if result != nil {
+		finalize(result.Summary.Duration)
+	} else {
+		finalize(0)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "命令执行失败: %v\n", err)
 		return
@@ -471,6 +550,11 @@ func (s *interactiveShell) dispatchExec(ctx context.Context, sessions []executor
 			fmt.Print(rendered)
 		}
 	}
+
+	// 打印耗时汇总行
+	if summary := output.FormatDurationSummary(result.Results, result.Summary.Duration, colorEnabled); summary != "" {
+		fmt.Print(summary)
+	}
 }
 
 // highlightExecResults 对 ExecResult 切片中的 Output 应用 grep 高亮。
@@ -488,12 +572,19 @@ func highlightExecResults(results []executor.ExecResult, info output.GrepInfo, c
 }
 
 // dispatchStream 使用 StreamOnAll 执行流式命令（stream 模式）
-func (s *interactiveShell) dispatchStream(ctx context.Context, sessions []executor.Session, command string) {
+// stream 模式因输出持续流出，不采用行内读秒，退出时打印总时长。
+func (s *interactiveShell) dispatchStream(ctx context.Context, sessions []executor.Session, command, displayCmd string) {
+	const yellow = "\033[1;33m"
+	const reset = "\033[0m"
+	fmt.Fprintf(os.Stdout, "%s$ %s%s\n", yellow, displayCmd, reset)
+
 	outputCh := make(chan executor.OutputLine, 100)
 
 	// 提取 grep 搜索信息，用于高亮显示
 	grepInfo := output.ExtractGrepInfo(command)
 	colorEnabled := output.IsColorSupported()
+
+	start := time.Now()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -514,6 +605,9 @@ func (s *interactiveShell) dispatchStream(ctx context.Context, sessions []execut
 	if err := <-errCh; err != nil {
 		fmt.Fprintf(os.Stderr, "流式执行错误: %v\n", err)
 	}
+
+	// 流式命令退出后（Ctrl+C 或自然结束）打印已运行时长
+	fmt.Print(output.FormatStreamDuration(time.Since(start), colorEnabled))
 }
 
 // ensureHistoryFile 展开历史文件路径并确保其父目录存在

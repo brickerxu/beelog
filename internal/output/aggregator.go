@@ -5,9 +5,70 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/brickerxu/beelog/internal/executor"
 )
+
+// FormatBriefDuration 返回紧凑的耗时显示，如 "156ms" / "1.5s" / "1m23s"。
+func FormatBriefDuration(d time.Duration) string {
+	if d < time.Second {
+		return d.Truncate(time.Millisecond).String()
+	}
+	if d < time.Minute {
+		return d.Truncate(100 * time.Millisecond).String()
+	}
+	return d.Truncate(time.Second).String()
+}
+
+// formatNodeDurationTag 返回附加到节点标题的耗时/退出码标注，
+// 已断开或未执行的节点返回 "跳过"。
+func formatNodeDurationTag(r executor.ExecResult) string {
+	if r.Duration == 0 && r.ExitCode == -1 {
+		return "跳过"
+	}
+	dur := FormatBriefDuration(r.Duration)
+	if r.ExitCode > 0 {
+		return fmt.Sprintf("%s, exit=%d", dur, r.ExitCode)
+	}
+	return dur
+}
+
+// FormatDurationSummary 生成一行灰色汇总：`⏱  总耗时 234ms · web-1 156ms · web-2 189ms`。
+// 空结果返回空串。
+func FormatDurationSummary(results []executor.ExecResult, total time.Duration, colorEnabled bool) string {
+	if len(results) == 0 {
+		return ""
+	}
+	const gray = "\033[90m"
+	const reset = "\033[0m"
+
+	var parts []string
+	for _, r := range results {
+		if r.Duration > 0 {
+			parts = append(parts, fmt.Sprintf("%s %s", r.NodeName, FormatBriefDuration(r.Duration)))
+		}
+	}
+	body := fmt.Sprintf("⏱  总耗时 %s", FormatBriefDuration(total))
+	if len(parts) > 0 {
+		body += " · " + strings.Join(parts, " · ")
+	}
+	if colorEnabled {
+		return gray + body + reset + "\n"
+	}
+	return body + "\n"
+}
+
+// FormatStreamDuration 生成 stream 模式退出后的耗时行 `⏱  已运行 12s`。
+func FormatStreamDuration(total time.Duration, colorEnabled bool) string {
+	const gray = "\033[90m"
+	const reset = "\033[0m"
+	body := fmt.Sprintf("⏱  已运行 %s", FormatBriefDuration(total))
+	if colorEnabled {
+		return gray + body + reset + "\n"
+	}
+	return body + "\n"
+}
 
 // outputAggregator 实现 OutputAggregator 接口
 type outputAggregator struct {
@@ -37,7 +98,7 @@ func (o *outputAggregator) RenderGrouped(results []executor.ExecResult) string {
 		if i > 0 {
 			sb.WriteString("\n")
 		}
-		fmt.Fprintf(&sb, "%s==================== [%s] ====================%s\n", colorOn, r.NodeName, colorOff)
+		fmt.Fprintf(&sb, "%s==================== [%s] (%s) ====================%s\n", colorOn, r.NodeName, formatNodeDurationTag(r), colorOff)
 		sb.WriteString(r.Output)
 		sb.WriteString("\n")
 	}

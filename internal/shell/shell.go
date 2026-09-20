@@ -407,35 +407,42 @@ func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, 
 	}
 }
 
-// startLiveCommandLine 打印黄色 `$ cmd  [⏱ 0s]` 行（不换行）并起 goroutine 每 500ms
-// 覆盖刷新读秒。返回的 finalize 必须在任何其它 stdout 写入前调用：它会以最终耗时
-// 覆盖读秒并补一个换行，同时等待 ticker goroutine 退出。
+// startLiveCommandLine 打印黄色 `$ cmd  [⏱ 0s]` 行（不换行）并起 goroutine 每秒
+// 覆盖刷新读秒。期间隐藏光标避免左右跳动，仅重绘 [⏱ ...] 片段而非整行。
+// 返回的 finalize 必须在任何其它 stdout 写入前调用：它会以最终耗时覆盖读秒并
+// 补一个换行、恢复光标显示，同时等待 ticker goroutine 退出。
 func startLiveCommandLine(displayCmd string) func(final time.Duration) {
 	const (
-		yellow = "\033[1;33m"
-		gray   = "\033[90m"
-		reset  = "\033[0m"
+		yellow   = "\033[1;33m"
+		gray     = "\033[90m"
+		reset    = "\033[0m"
+		hideCur  = "\033[?25l"
+		showCur  = "\033[?25h"
+		saveCur  = "\033[s"
+		loadCur  = "\033[u"
+		eraseEOL = "\033[K"
 	)
 	prefix := fmt.Sprintf("%s$ %s%s", yellow, displayCmd, reset)
 	start := time.Now()
 
-	fmt.Fprintf(os.Stdout, "%s  %s[⏱ 0s]%s", prefix, gray, reset)
+	// 一次性打印命令行 + 首帧读秒，并在读秒起点保存光标位置，后续只回到该点重绘。
+	fmt.Fprintf(os.Stdout, "%s%s  %s%s[⏱ 0s]%s", hideCur, prefix, saveCur, gray, reset)
 
 	done := make(chan time.Duration, 1)
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
-		ticker := time.NewTicker(500 * time.Millisecond)
+		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case d := <-done:
-				fmt.Fprintf(os.Stdout, "\r\033[K%s  %s[⏱ %s]%s\n",
-					prefix, gray, output.FormatBriefDuration(d), reset)
+				fmt.Fprintf(os.Stdout, "%s%s%s[⏱ %s]%s%s\n",
+					loadCur, eraseEOL, gray, output.FormatBriefDuration(d), reset, showCur)
 				return
 			case <-ticker.C:
-				fmt.Fprintf(os.Stdout, "\r\033[K%s  %s[⏱ %s]%s",
-					prefix, gray, output.FormatBriefDuration(time.Since(start)), reset)
+				fmt.Fprintf(os.Stdout, "%s%s%s[⏱ %s]%s",
+					loadCur, eraseEOL, gray, output.FormatBriefDuration(time.Since(start)), reset)
 			}
 		}
 	}()

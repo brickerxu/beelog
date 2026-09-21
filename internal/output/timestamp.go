@@ -50,14 +50,14 @@ func ParseLogTimestamp(line string) (time.Time, bool) {
 		for len(msStr) < 3 {
 			msStr += "0"
 		}
-		t, err := time.Parse("2006-01-02 15:04:05.000", base+"."+msStr)
+		t, err := time.ParseInLocation("2006-01-02 15:04:05.000", base+"."+msStr, time.Local)
 		if err != nil {
 			return time.Time{}, false
 		}
 		return t, true
 	}
 
-	t, err := time.Parse(TimestampFormat, base)
+	t, err := time.ParseInLocation(TimestampFormat, base, time.Local)
 	if err != nil {
 		return time.Time{}, false
 	}

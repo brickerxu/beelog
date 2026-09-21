@@ -161,12 +161,22 @@ func toRecords(result *executor.BatchResult) []record {
 		if r.Output == "" {
 			continue
 		}
+		// 无时间戳的续行（如堆栈）继承前一条带时间戳日志的时间，
+		// 保证与父日志相邻，不会漂到文件头/尾。
+		var lastTS time.Time
+		var hasLastTS bool
 		for _, line := range strings.Split(r.Output, "\n") {
 			if strings.TrimSpace(line) == "" {
 				continue
 			}
-			ts, ok := output.ParseLogTimestamp(line)
-			if !ok {
+			var ts time.Time
+			if parsed, ok := output.ParseLogTimestamp(line); ok {
+				ts = parsed
+				lastTS = parsed
+				hasLastTS = true
+			} else if hasLastTS {
+				ts = lastTS
+			} else {
 				ts = time.Now()
 			}
 			records = append(records, record{

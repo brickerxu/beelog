@@ -532,15 +532,30 @@ func (s *interactiveShell) dispatchExec(ctx context.Context, sessions []executor
 			if r.Output == "" {
 				continue
 			}
+			// 按节点跟踪最近一次解析到的时间戳，
+			// 让没有时间戳的续行（如堆栈）继承上一条带时间戳日志的时间，
+			// 保证多节点合并排序时它们与父日志相邻。
+			var lastTS time.Time
+			var hasLastTS bool
 			for _, line := range strings.Split(r.Output, "\n") {
 				if strings.TrimSpace(line) == "" {
 					continue
 				}
 				content := output.HighlightPatterns(line, grepInfo, colorEnabled)
+				var ts time.Time
+				if parsed, ok := output.ParseLogTimestamp(line); ok {
+					ts = parsed
+					lastTS = parsed
+					hasLastTS = true
+				} else if hasLastTS {
+					ts = lastTS
+				} else {
+					ts = time.Now()
+				}
 				lines = append(lines, executor.OutputLine{
 					NodeName:  r.NodeName,
 					Content:   content,
-					Timestamp: resolveTimestamp(line),
+					Timestamp: ts,
 					IsError:   r.ExitCode != 0,
 				})
 			}
@@ -652,15 +667,6 @@ func truncateHistory(path string, maxLines int) {
 	// 保留最近的 maxLines 行
 	kept := lines[len(lines)-maxLines:]
 	os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0600)
-}
-
-// resolveTimestamp tries to parse a log timestamp from the line content.
-// Falls back to time.Now() if parsing fails.
-func resolveTimestamp(line string) time.Time {
-	if ts, ok := output.ParseLogTimestamp(line); ok {
-		return ts
-	}
-	return time.Now()
 }
 
 // printWelcomeMessage 显示欢迎信息和快捷键提示

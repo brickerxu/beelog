@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,92 @@ func TestHandleHistory_Empty(t *testing.T) {
 	s := &interactiveShell{historyFile: path}
 	if out := s.handleHistory(nil); !strings.Contains(out, "暂无历史命令") {
 		t.Errorf("expected empty message, got: %s", out)
+	}
+}
+
+func TestHandleHistory_PatternFilter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history")
+	os.WriteFile(path, []byte(strings.Join([]string{
+		"ls -l",
+		"tail /var/log/nginx/access.log",
+		"systemctl status nginx",
+		"cat /etc/hosts",
+		"grep ERROR /var/log/nginx/error.log",
+	}, "\n")+"\n"), 0600)
+
+	s := &interactiveShell{historyFile: path}
+	out := s.handleHistory([]string{"nginx"})
+
+	// 仅命中 nginx 相关三条；原编号 2/3/5 都要保留
+	for _, want := range []string{"2  tail /var/log/nginx/access.log", "3  systemctl status nginx", "5  grep ERROR /var/log/nginx/error.log"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got:\n%s", want, out)
+		}
+	}
+	// 不应包含未匹配行
+	for _, unwant := range []string{"ls -l", "cat /etc/hosts"} {
+		if strings.Contains(out, unwant) {
+			t.Errorf("unexpected %q in output:\n%s", unwant, out)
+		}
+	}
+	if !strings.Contains(out, `匹配 "nginx"`) {
+		t.Errorf("expected header showing pattern, got:\n%s", out)
+	}
+}
+
+func TestHandleHistory_PatternWithLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history")
+	var b strings.Builder
+	for i := 1; i <= 10; i++ {
+		fmt.Fprintf(&b, "ls -l /path/%d\n", i)
+	}
+	fmt.Fprintln(&b, "other cmd")
+	os.WriteFile(path, []byte(b.String()), 0600)
+
+	s := &interactiveShell{historyFile: path}
+	// 有 10 条匹配 "ls"，限制显示 3 条 → 应取最近 3 条（第 8/9/10 行）
+	out := s.handleHistory([]string{"ls", "3"})
+	for _, want := range []string{"8  ls -l /path/8", "9  ls -l /path/9", "10  ls -l /path/10"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "ls -l /path/1\n") {
+		t.Errorf("earliest match should be trimmed by limit, got:\n%s", out)
+	}
+	if !strings.Contains(out, "3/10") {
+		t.Errorf("header should show 3/10 shown/matches, got:\n%s", out)
+	}
+}
+
+func TestHandleHistory_PatternNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history")
+	os.WriteFile(path, []byte("foo\nbar\n"), 0600)
+	s := &interactiveShell{historyFile: path}
+	if out := s.handleHistory([]string{"zzz"}); !strings.Contains(out, "未匹配到") {
+		t.Errorf("expected no-match message, got: %s", out)
+	}
+}
+
+func TestHandleHistory_RegexPattern(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history")
+	os.WriteFile(path, []byte("sudo systemctl restart nginx\nnot-sudo something\nsudo apt update\n"), 0600)
+
+	s := &interactiveShell{historyFile: path}
+	// 用锚点 ^sudo 只匹配以 sudo 开头的两条
+	out := s.handleHistory([]string{"^sudo "})
+	if !strings.Contains(out, "sudo systemctl restart nginx") {
+		t.Errorf("expected sudo systemctl in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "sudo apt update") {
+		t.Errorf("expected sudo apt in output, got:\n%s", out)
+	}
+	if strings.Contains(out, "not-sudo something") {
+		t.Errorf("regex anchor should exclude not-sudo, got:\n%s", out)
 	}
 }
 

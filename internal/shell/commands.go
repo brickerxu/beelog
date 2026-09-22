@@ -74,6 +74,7 @@ beelog 交互式 Shell 帮助
   :only <node1> [node2 ...]        将后续命令限定到指定节点子集
   :all                             恢复对全部节点执行（取消 :only 限定）
   :history [N|all]                 显示最近 N 条历史命令（默认 30），配合 !N 使用
+  :history <pattern> [N|all]       按子串/正则过滤（大小写不敏感），保留原编号；如 :history nginx
   !<N>                             把编号 N 的历史命令回填到输入行，可编辑后回车
   :help                            显示此帮助信息
 

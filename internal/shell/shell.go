@@ -729,10 +729,18 @@ func lookupHistoryEntry(path string, n int) (string, error) {
 }
 
 // handleHistory 处理 :history 命令，打印可编号的最近命令列表。
-// 用法: :history          默认最近 30 条
+// 参数解析（顺序无关）：
+//   - 正整数或 "all" → 显示条数（无 pattern 时默认 30，有 pattern 时默认全部匹配）
+//   - 其它字符串 → 过滤 pattern（先按正则不区分大小写编译；不合法则退化为子串匹配）
 //
-//	:history <N>     最近 N 条
-//	:history all     全部
+// 用法举例:
+//
+//	:history                最近 30 条
+//	:history 100            最近 100 条
+//	:history all            全部
+//	:history nginx          所有包含 nginx 的历史（保留原编号）
+//	:history nginx 20       最近 20 条 nginx 相关
+//	:history "^sudo "       正则过滤（以 sudo 开头）
 func (s *interactiveShell) handleHistory(args []string) string {
 	lines, err := readHistoryLines(s.historyFile)
 	if err != nil {
@@ -742,34 +750,77 @@ func (s *interactiveShell) handleHistory(args []string) string {
 		return "暂无历史命令"
 	}
 
+	pattern := ""
 	limit := 30
-	if len(args) > 0 {
-		switch strings.ToLower(args[0]) {
-		case "all":
-			limit = len(lines)
-		default:
-			n, perr := strconv.Atoi(args[0])
-			if perr != nil || n <= 0 {
-				return "用法: :history [N|all]"
-			}
+	limitFromArgs := false
+	for _, a := range args {
+		if strings.EqualFold(a, "all") {
+			limit = -1
+			limitFromArgs = true
+			continue
+		}
+		if n, perr := strconv.Atoi(a); perr == nil && n > 0 {
 			limit = n
+			limitFromArgs = true
+			continue
+		}
+		if pattern == "" {
+			pattern = a
+			continue
+		}
+		return fmt.Sprintf("无法识别参数 %q\n用法: :history [<pattern>] [N|all]", a)
+	}
+
+	type entry struct {
+		num  int
+		text string
+	}
+	var matches []entry
+	if pattern != "" {
+		re, rerr := regexp.Compile("(?i)" + pattern)
+		useRegex := rerr == nil
+		needle := strings.ToLower(pattern)
+		for i, ln := range lines {
+			var hit bool
+			if useRegex {
+				hit = re.MatchString(ln)
+			} else {
+				hit = strings.Contains(strings.ToLower(ln), needle)
+			}
+			if hit {
+				matches = append(matches, entry{i + 1, ln})
+			}
+		}
+		if len(matches) == 0 {
+			return fmt.Sprintf("未匹配到包含 %q 的历史命令", pattern)
+		}
+		// 有 pattern 且未显式指定条数时，默认展示全部匹配
+		if !limitFromArgs {
+			limit = -1
+		}
+	} else {
+		for i, ln := range lines {
+			matches = append(matches, entry{i + 1, ln})
 		}
 	}
 
-	start := len(lines) - limit
-	if start < 0 {
-		start = 0
+	visible := matches
+	if limit > 0 && len(matches) > limit {
+		visible = matches[len(matches)-limit:]
 	}
 
-	// 计算编号列宽（用最大编号即末尾行号）
-	maxNum := len(lines)
+	// 编号列宽用可见列表中的最大编号
+	maxNum := visible[len(visible)-1].num
 	width := len(strconv.Itoa(maxNum))
 
 	var sb strings.Builder
-	shown := len(lines) - start
-	sb.WriteString(fmt.Sprintf("历史命令 (最近 %d 条，共 %d 条，用 !N 回填):\n", shown, len(lines)))
-	for i := start; i < len(lines); i++ {
-		sb.WriteString(fmt.Sprintf("  %*d  %s\n", width, i+1, lines[i]))
+	if pattern != "" {
+		sb.WriteString(fmt.Sprintf("历史命令 (匹配 %q: %d/%d 条，!N 回填):\n", pattern, len(visible), len(matches)))
+	} else {
+		sb.WriteString(fmt.Sprintf("历史命令 (最近 %d 条，共 %d 条，!N 回填):\n", len(visible), len(matches)))
+	}
+	for _, m := range visible {
+		sb.WriteString(fmt.Sprintf("  %*d  %s\n", width, m.num, m.text))
 	}
 	sb.WriteString("提示: !N 会把编号 N 的命令回填到输入行，可编辑再回车执行")
 	return sb.String()

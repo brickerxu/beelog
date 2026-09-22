@@ -25,6 +25,51 @@ type NodeSession struct {
 	mu            sync.Mutex
 	Disconnected  bool  // 节点是否已断开
 	DisconnectErr error // 断开原因
+
+	// drainMu 保护 drainWait；drainWait 非 nil 表示有正在进行的后台 drain，
+	// 等它 close 之前不要再启动新的 Execute/Stream，避免与 drain reader 抢 stdout。
+	drainMu   sync.Mutex
+	drainWait chan struct{}
+}
+
+// BeginDrain 标记一个后台 drain 已启动，返回 done 函数供 drain 完成时调用。
+// 若已有 drain 在跑则复用旧的 waiter（新的 drain 完成时才 close），保证只跟踪最后一次。
+func (s *NodeSession) BeginDrain() func() {
+	ch := make(chan struct{})
+	s.drainMu.Lock()
+	prev := s.drainWait
+	s.drainWait = ch
+	s.drainMu.Unlock()
+	// 先关闭上一次 waiter（如果有），让潜在的 WaitPendingDrain 顺利往下走
+	if prev != nil {
+		select {
+		case <-prev:
+		default:
+			close(prev)
+		}
+	}
+	return func() {
+		s.drainMu.Lock()
+		if s.drainWait == ch {
+			s.drainWait = nil
+		}
+		s.drainMu.Unlock()
+		close(ch)
+	}
+}
+
+// WaitPendingDrain 阻塞等待任何在跑的后台 drain 完成，最多等 timeout。
+func (s *NodeSession) WaitPendingDrain(timeout time.Duration) {
+	s.drainMu.Lock()
+	ch := s.drainWait
+	s.drainMu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case <-ch:
+	case <-time.After(timeout):
+	}
 }
 
 // GetNodeName 实现 executor.Session 接口

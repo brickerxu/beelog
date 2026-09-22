@@ -410,7 +410,7 @@ func (s *interactiveShell) dispatchCommand(ctx context.Context, command string, 
 	// 否则 Stream() 无法感知命令完成，会一直阻塞。
 	if requiresStreamMode(command) {
 		if s.mode != output.ModeStream {
-			fmt.Fprintln(os.Stderr, "检测到持续输出命令，自动切换到 stream 模式")
+			fmt.Fprintf(os.Stderr, "检测到持续输出命令，本条以 stream 模式执行（当前模式 %s 不变）\n", s.mode)
 		}
 		s.dispatchStream(cmdCtx, sessions, command, displayCmd)
 	} else {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/brickerxu/beelog/internal/config"
@@ -16,6 +17,17 @@ import (
 	"github.com/brickerxu/beelog/internal/totp"
 	gossh "golang.org/x/crypto/ssh"
 )
+
+// drainTimeout 是等待 drain 哨兵回显的最长时间。健康连接一般 <100ms。
+const drainTimeout = 3 * time.Second
+
+// newDrainMarker 生成唯一 drain 哨兵，用 uint64 计数器避免同一纳秒内碰撞。
+var drainCounter uint64
+
+func newDrainMarker() string {
+	seq := atomic.AddUint64(&drainCounter, 1)
+	return fmt.Sprintf("__BEELOG_DRAIN_%d_%d__", time.Now().UnixNano(), seq)
+}
 
 // sshConnManager 实现 SSHConnManager 接口
 type sshConnManager struct {
@@ -148,6 +160,9 @@ func (m *sshConnManager) Connect(ctx context.Context, jumpCfg config.JumpServerC
 // PTY 模式下使用 \r 发送命令，通过唯一 marker 检测命令完成，
 // 并过滤掉命令回显、ANSI 转义序列和 marker 行本身。
 func (m *sshConnManager) Execute(ctx context.Context, session *NodeSession, command string) (*executor.ExecResult, error) {
+	// 上一次命令可能还在后台 drain 残留输出，等它一下再动手，避免读到别人的尾巴
+	session.WaitPendingDrain(drainTimeout)
+
 	start := time.Now()
 	result := &executor.ExecResult{
 		NodeName: session.NodeName,
@@ -170,23 +185,29 @@ func (m *sshConnManager) Execute(ctx context.Context, session *NodeSession, comm
 	readBuf := make([]byte, 4096)
 	done := make(chan struct{})
 
+	// watchMarkers 是 goroutine 要监听的 marker 列表。正常执行只有原始 marker；
+	// 一旦触发中断，会追加一个 drain marker（cancel 分支处添加），goroutine 看到
+	// 任一 marker 即退出。这样中断后 goroutine 继续把管道残留读干净，避免下一条命令
+	// 的 Read 拿到本次命令的尾巴。
+	var markersMu sync.Mutex
+	watchMarkers := [][]byte{[]byte(marker)}
+
 	go func() {
 		defer close(done)
 		for {
-			// 每次 Read 前检查 context，确保取消后能及时退出，
-			// 避免与下一条命令的读取 goroutine 竞争同一 stdout 管道
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
 			n, err := session.Stdout.Read(readBuf)
 			if n > 0 {
 				accumulated.Write(readBuf[:n])
-				// 检查当前 marker 是否出现在行首（即 echo 的实际输出，而非命令回显）
-				// 命令回显中 marker 嵌在 "... ; echo __BEELOG_END_xxx $?" 里，
-				// 而 echo 的实际输出是独立一行 "__BEELOG_END_xxx 0"
-				if markerOnOwnLine(accumulated.Bytes(), []byte(marker)) {
+				markersMu.Lock()
+				hit := false
+				for _, m := range watchMarkers {
+					if markerOnOwnLine(accumulated.Bytes(), m) {
+						hit = true
+						break
+					}
+				}
+				markersMu.Unlock()
+				if hit {
 					return
 				}
 			}
@@ -198,15 +219,27 @@ func (m *sshConnManager) Execute(ctx context.Context, session *NodeSession, comm
 
 	select {
 	case <-ctx.Done():
-		// 发送 Ctrl+C 终止远端命令（与 Stream() 保持一致）
+		// 发送 Ctrl+C 后立刻返回，让用户拿回提示符。
+		// drain（读到哨兵为止）放后台跑；下一次 Execute/Stream 会 WaitPendingDrain 等它。
 		session.Stdin.Write([]byte{0x03})
-		// 等待读取 goroutine 退出，避免残留 goroutine 与下一条命令竞争 stdout。
-		// 发送 0x03 后远端会输出 ^C 并返回提示符，Read() 将很快解除阻塞，
-		// goroutine 检查到 ctx.Done() 后退出。
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-		}
+		drainMarker := newDrainMarker()
+		markersMu.Lock()
+		watchMarkers = append(watchMarkers, []byte(drainMarker))
+		markersMu.Unlock()
+		io.WriteString(session.Stdin, "echo "+drainMarker+"\r")
+		drainDone := session.BeginDrain()
+		debug := m.debug
+		nodeName := session.NodeName
+		go func() {
+			defer drainDone()
+			select {
+			case <-done:
+			case <-time.After(drainTimeout):
+				if debug {
+					fmt.Fprintf(os.Stderr, "[EXEC DEBUG] [%s] drain 超时 (%s)\n", nodeName, drainTimeout)
+				}
+			}
+		}()
 		errMsg := "命令被中断"
 		if ctx.Err() == context.DeadlineExceeded {
 			errMsg = "命令执行超时"
@@ -230,12 +263,20 @@ func (m *sshConnManager) Execute(ctx context.Context, session *NodeSession, comm
 	}
 }
 
+// normalizeLineEndings 把 PTY 输出里的 \r\n 和裸 \r 都统一成 \n，
+// 避免中间的 \r 让终端把光标拉回列 0、后续字节覆盖前面内容，
+// 从而把 marker/命令回显切成看似完整实则损坏的一行。
+func normalizeLineEndings(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
+}
+
 // parseExecuteOutput 从 PTY 原始输出中提取干净的命令结果
 // 过滤掉：命令回显行、marker 行、ANSI 转义序列、shell 提示符、终端标题序列
 func parseExecuteOutput(raw, command, marker string) (string, int) {
 	exitCode := 0
 
-	lines := strings.Split(raw, "\n")
+	lines := strings.Split(normalizeLineEndings(raw), "\n")
 
 	// 第一遍：找到命令回显行的位置和当前 marker 输出行的位置
 	// 命令回显行：包含原始命令 AND 当前 marker（PTY 回显整条 fullCmd）
@@ -289,8 +330,8 @@ func parseExecuteOutput(raw, command, marker string) (string, int) {
 			continue
 		}
 
-		// 跳过任何包含 __BEELOG_END_ 的行（旧 marker 残留）
-		if strings.Contains(cleaned, "__BEELOG_END_") {
+		// 跳过任何含 marker 片段的行（完整 marker 或被 \r 切碎的残片）
+		if containsMarkerFragment(cleaned) {
 			continue
 		}
 
@@ -364,8 +405,10 @@ func stripAllEscapes(s string) string {
 }
 
 // isCommandEcho 判断一行是否是命令回显
+// 生成的完整命令固定形如 "<cmd> ; echo __BEELOG_END_<nanos>__ $?"，
+// 即使 marker 被裸 \r 切断（如变成 "... ; echo __" 或 "... ; echo __BEELOG"），
+// "; echo __" 前缀通常还在，据此兜底识别；用户命令里出现 "; echo __" 的概率极低。
 func isCommandEcho(line, command string) bool {
-	// 去除 ANSI 后的行如果包含原始命令的主要部分，认为是回显
 	cleanLine := strings.TrimSpace(line)
 	cleanCmd := strings.TrimSpace(command)
 
@@ -373,12 +416,28 @@ func isCommandEcho(line, command string) bool {
 		return false
 	}
 
-	// 完全匹配或包含完整命令（可能带 ; echo __BEELOG_END_... 后缀）
-	if strings.Contains(cleanLine, cleanCmd) && strings.Contains(cleanLine, "__BEELOG_END_") {
+	if !strings.Contains(cleanLine, cleanCmd) {
+		return false
+	}
+
+	// 正常情况：整个 marker 都在
+	if strings.Contains(cleanLine, "__BEELOG_END_") {
+		return true
+	}
+	// 破损兜底：marker 后半被 \r 切走，但 "; echo __" 仍在
+	if strings.Contains(cleanLine, "; echo __") {
 		return true
 	}
 
 	return false
+}
+
+// containsMarkerFragment 判断一行是否含有我们 marker 的可识别片段。
+// 完整 marker 是 "__BEELOG_END_<nanos>__" 或 "__BEELOG_DRAIN_<nanos>_<seq>__"；
+// 一旦被裸 \r 切成 "BEELOG_END_179..." 这种孤立片段，前后下划线不在了，
+// 单纯查 "__BEELOG_END_" 就漏。这里查内核关键字，避免碎片泄漏进用户输出。
+func containsMarkerFragment(line string) bool {
+	return strings.Contains(line, "BEELOG_END_") || strings.Contains(line, "BEELOG_DRAIN_")
 }
 
 // markerOnOwnLine 检查 marker 是否出现在独立行的开头
@@ -421,6 +480,9 @@ func resolveTimestamp(line string) time.Time {
 // Stream 在目标节点上执行流式命令，持续读取输出发送到 channel
 // PTY 模式下使用 \r 发送命令，过滤命令回显、ANSI 转义和 marker 行
 func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, command string, output chan<- executor.OutputLine) error {
+	// 上一次命令可能还在后台 drain 残留输出，等它一下再动手，避免读到别人的尾巴
+	session.WaitPendingDrain(drainTimeout)
+
 	// PTY 模式下用 \r 作为回车
 	if _, err := io.WriteString(session.Stdin, command+"\r"); err != nil {
 		return fmt.Errorf("[%s] 发送流式命令失败: %w", session.NodeName, err)
@@ -463,36 +525,75 @@ func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, comma
 	for {
 		select {
 		case <-ctx.Done():
-			// 发送 Ctrl+C 终止远程命令
+			// 发送 Ctrl+C 终止远程命令，然后立刻返回让用户拿回提示符。
+			// 剩下的清理工作（排空 SSH 管道里的残留输出、关闭 reader goroutine）
+			// 放到后台 goroutine：它会写一个 drain 哨兵并读到哨兵为止。
+			// 下一次 Execute/Stream 在开头 WaitPendingDrain，等它读完再继续。
 			session.Stdin.Write([]byte{0x03}) // ETX (Ctrl+C)
-			// 关闭 stopCh，解除 goroutine 在 readCh 上的阻塞，让其退出
-			close(stopCh)
-			// 等待 goroutine 退出，避免残留 goroutine 与下一条命令竞争 stdout
-			select {
-			case <-doneCh:
-			case <-time.After(2 * time.Second):
-			}
+			drainDone := session.BeginDrain()
+			go func() {
+				defer drainDone()
+				drainMarker := newDrainMarker()
+				io.WriteString(session.Stdin, "echo "+drainMarker+"\r")
+				var drainBuf bytes.Buffer
+				drainDeadline := time.After(drainTimeout)
+			Loop:
+				for {
+					select {
+					case r, ok := <-readCh:
+						if !ok {
+							break Loop
+						}
+						if len(r.data) > 0 {
+							drainBuf.Write(r.data)
+							if markerOnOwnLine(drainBuf.Bytes(), []byte(drainMarker)) {
+								break Loop
+							}
+						}
+						if r.err != nil {
+							break Loop
+						}
+					case <-drainDeadline:
+						break Loop
+					}
+				}
+				// 关闭 reader goroutine 并等它真的退出，避免下一条命令与它抢 stdout。
+				// 关 stopCh 只在 reader 下次 Read 返回后才生效——若远端已安静，reader
+				// 会一直卡在阻塞 Read 里。往 stdin 打一个 \r 触发远端回 prompt，把 reader
+				// 踹醒；否则 doneCh 只能靠 2s 超时兜底，且旧 reader 会与下一条命令抢 stdout，
+				// 造成下一条命令 marker 丢失、卡死。
+				close(stopCh)
+				session.Stdin.Write([]byte("\r"))
+				select {
+				case <-doneCh:
+				case <-time.After(2 * time.Second):
+				}
+			}()
 			return ctx.Err()
 		case r := <-readCh:
+			// \r 和 \n 都作为行边界。\r\n 会先在 \r 处 flush 出内容，
+			// 紧跟的 \n 只 flush 出空行（会被 cleaned=="" 过滤掉），
+			// 而中间夹带的裸 \r（会让终端把光标拉回列 0 覆盖前面内容）
+			// 也被切成独立短行，marker/命令回显不会被覆盖破坏。
+			flush := func() {
+				line := lineBuf.String()
+				lineBuf.Reset()
+				cleaned := stripAllEscapes(line)
+				cleaned = strings.TrimRight(cleaned, " \t")
+				if cleaned == "" || containsMarkerFragment(cleaned) ||
+					isCommandEcho(cleaned, command) || isShellPrompt(cleaned) {
+					return
+				}
+				output <- executor.OutputLine{
+					NodeName:  session.NodeName,
+					Content:   cleaned,
+					Timestamp: resolveTimestamp(cleaned),
+					IsError:   false,
+				}
+			}
 			for _, b := range r.data {
-				if b == '\n' {
-					line := strings.TrimRight(lineBuf.String(), "\r")
-					lineBuf.Reset()
-
-					// 过滤：ANSI 转义、命令回显、marker 行、shell 提示符
-					cleaned := stripAllEscapes(line)
-					cleaned = strings.TrimRight(cleaned, " \t")
-					if cleaned == "" || strings.Contains(cleaned, "__BEELOG_END_") ||
-						isCommandEcho(cleaned, command) || isShellPrompt(cleaned) {
-						continue
-					}
-
-					output <- executor.OutputLine{
-						NodeName:  session.NodeName,
-						Content:   cleaned,
-						Timestamp: resolveTimestamp(cleaned),
-						IsError:   false,
-					}
+				if b == '\n' || b == '\r' {
+					flush()
 				} else {
 					lineBuf.WriteByte(b)
 				}
@@ -503,7 +604,7 @@ func (m *sshConnManager) Stream(ctx context.Context, session *NodeSession, comma
 					if lineBuf.Len() > 0 {
 						line := strings.TrimRight(lineBuf.String(), "\r")
 						cleaned := stripAllEscapes(line)
-						if cleaned != "" && !strings.Contains(cleaned, "__BEELOG_END_") && !isCommandEcho(cleaned, command) && !isShellPrompt(cleaned) {
+						if cleaned != "" && !containsMarkerFragment(cleaned) && !isCommandEcho(cleaned, command) && !isShellPrompt(cleaned) {
 							output <- executor.OutputLine{
 								NodeName:  session.NodeName,
 								Content:   cleaned,

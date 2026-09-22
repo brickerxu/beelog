@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -28,15 +30,14 @@ func main() {
 		RunE:  run,
 	}
 
-	rootCmd.Flags().StringP("config", "c", "~/.config/beelog/config.yaml", "配置文件路径")
+	rootCmd.PersistentFlags().StringP("config", "c", "~/.config/beelog/config.yaml", "配置文件路径")
 	rootCmd.Flags().StringP("mode", "m", "", "输出模式: grouped | merged | stream")
 	rootCmd.Flags().StringP("group", "g", "", "节点分组名称")
 	rootCmd.Flags().BoolP("verbose", "v", false, "详细输出")
 	rootCmd.Flags().Bool("debug", false, "调试模式")
 	rootCmd.Flags().Int("timeout", 0, "命令超时时间(秒), 0 表示使用配置文件值")
 	rootCmd.Flags().Int("concurrency", 0, "最大并发数, 0 表示使用配置文件值")
-
-	_ = rootCmd.MarkFlagRequired("group")
+	rootCmd.Flags().BoolP("list-groups", "l", false, "列出配置中所有分组后退出")
 
 	// 注册 --group flag 的动态补全：从配置文件读取分组名
 	_ = rootCmd.RegisterFlagCompletionFunc("group", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -64,6 +65,7 @@ func main() {
 		},
 	}
 	rootCmd.AddCommand(installCompletionCmd)
+	rootCmd.AddCommand(newConfigCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -79,6 +81,7 @@ func run(cmd *cobra.Command, args []string) error {
 	debug, _ := cmd.Flags().GetBool("debug")
 	timeout, _ := cmd.Flags().GetInt("timeout")
 	concurrency, _ := cmd.Flags().GetInt("concurrency")
+	listGroups, _ := cmd.Flags().GetBool("list-groups")
 
 	// 2. 加载配置
 	cfgMgr := config.NewConfigManager()
@@ -88,6 +91,17 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 	if err := cfgMgr.Validate(cfg); err != nil {
 		return fmt.Errorf("配置文件验证失败: %w", err)
+	}
+
+	// --list-groups: 打印所有分组后立即退出，不建立任何 SSH 连接
+	if listGroups {
+		printGroups(os.Stdout, cfg)
+		return nil
+	}
+
+	// --group 是运行 shell 的硬要求；--list-groups 分支已在上面拦住
+	if group == "" {
+		return fmt.Errorf("必须提供 --group（或用 --list-groups 查看可选分组）")
 	}
 
 	// 3. CLI 参数覆盖配置默认值
@@ -214,6 +228,33 @@ func run(cmd *cobra.Command, args []string) error {
 	sessMgr.DisconnectAll()
 
 	return err
+}
+
+// printGroups 打印配置中所有分组及其节点，按分组名字典序排列。
+func printGroups(w io.Writer, cfg *config.Config) {
+	names := make([]string, 0, len(cfg.Groups))
+	for name := range cfg.Groups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	fmt.Fprintf(w, "分组列表 (%d):\n", len(names))
+	if len(names) == 0 {
+		return
+	}
+
+	// 计算分组名列宽，用于对齐
+	nameWidth := 0
+	for _, n := range names {
+		if len(n) > nameWidth {
+			nameWidth = len(n)
+		}
+	}
+
+	for _, name := range names {
+		members := cfg.Groups[name]
+		fmt.Fprintf(w, "  %-*s  (%d nodes)  %s\n", nameWidth, name, len(members), strings.Join(members, ", "))
+	}
 }
 
 // connectAllNodes 并发连接所有节点，显示连接进度

@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -30,18 +32,19 @@ const MaxHistoryLines = 1000
 
 // interactiveShell 实现 InteractiveShell 接口
 type interactiveShell struct {
-	group      string
-	exec       executor.Executor
-	sessMgr    SessionManager
-	outputAgg  output.OutputAggregator
-	mode       output.OutputMode
-	completer  *remoteCompleter
-	execFn     executor.ExecFunc
-	cwd        string                // 远程节点当前工作目录
-	lastResult *executor.BatchResult // 上一条命令的执行结果
-	saveCfg    saver.Config          // 保存配置
-	onlyNodes  map[string]bool       // nil = 全部节点；非 nil = :only 设置的子集
-	promptIdle atomic.Bool           // true 表示 readline 处于空闲等待输入，可安全刷新时钟
+	group       string
+	exec        executor.Executor
+	sessMgr     SessionManager
+	outputAgg   output.OutputAggregator
+	mode        output.OutputMode
+	completer   *remoteCompleter
+	execFn      executor.ExecFunc
+	cwd         string                // 远程节点当前工作目录
+	lastResult  *executor.BatchResult // 上一条命令的执行结果
+	saveCfg     saver.Config          // 保存配置
+	onlyNodes   map[string]bool       // nil = 全部节点；非 nil = :only 设置的子集
+	promptIdle  atomic.Bool           // true 表示 readline 处于空闲等待输入，可安全刷新时钟
+	historyFile string                // 历史文件路径，供 :history 和 !N 读取
 }
 
 // NewInteractiveShell 创建交互式 shell 实例
@@ -206,6 +209,7 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "警告: 无法初始化命令历史文件: %v\n", err)
 		historyFile = ""
 	}
+	s.historyFile = historyFile
 
 	// 启动时获取远程当前目录
 	s.refreshCwd()
@@ -278,6 +282,17 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 			continue
 		}
 
+		// !N 回填：解析历史条目并预填到下一次 Readline 缓冲，用户可再编辑再回车执行
+		if n, ok := parseBangRef(input); ok {
+			cmd, herr := lookupHistoryEntry(s.historyFile, n)
+			if herr != nil {
+				fmt.Fprintln(os.Stderr, herr.Error())
+				continue
+			}
+			rl.SetDefault(cmd)
+			continue
+		}
+
 		// 会话管理命令
 		if isSessionCommand(input) {
 			cmd, args := ParseSessionCommand(input)
@@ -300,6 +315,8 @@ func (s *interactiveShell) Run(ctx context.Context) error {
 				msg = "已恢复全部节点"
 			case "nodes":
 				msg = s.handleNodes()
+			case "history":
+				msg = s.handleHistory(args)
 			default:
 				quit, msg = HandleSessionCommand(cmd, args, s.sessMgr)
 			}
@@ -650,6 +667,112 @@ func ensureHistoryFile(group string) (string, error) {
 	truncateHistory(historyFile, MaxHistoryLines)
 
 	return historyFile, nil
+}
+
+// bangRefRe 匹配 `!N`（N 为正整数）作为完整输入。
+var bangRefRe = regexp.MustCompile(`^!(\d+)$`)
+
+// parseBangRef 判断 input 是否为 !N 回填指令，返回编号（1-based）和是否命中。
+func parseBangRef(input string) (int, bool) {
+	m := bangRefRe.FindStringSubmatch(input)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// readHistoryLines 读取历史文件内容并按行返回；跳过空行、`:history` 自身、
+// 以及 `!N` 回填指令（避免用户看到自己敲的编号又列进去）。返回的切片下标 i
+// 对应用户可见编号 i+1。
+func readHistoryLines(path string) ([]string, error) {
+	if path == "" {
+		return nil, fmt.Errorf("历史文件未初始化")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("读取历史文件失败: %w", err)
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if trimmed == ":history" || strings.HasPrefix(trimmed, ":history ") {
+			continue
+		}
+		if _, ok := parseBangRef(trimmed); ok {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out, nil
+}
+
+// lookupHistoryEntry 按 1-based 编号取出历史条目；越界返回可展示的错误。
+func lookupHistoryEntry(path string, n int) (string, error) {
+	lines, err := readHistoryLines(path)
+	if err != nil {
+		return "", err
+	}
+	if n < 1 || n > len(lines) {
+		return "", fmt.Errorf("!%d 越界，历史共 %d 条，输入 :history 查看", n, len(lines))
+	}
+	return lines[n-1], nil
+}
+
+// handleHistory 处理 :history 命令，打印可编号的最近命令列表。
+// 用法: :history          默认最近 30 条
+//
+//	:history <N>     最近 N 条
+//	:history all     全部
+func (s *interactiveShell) handleHistory(args []string) string {
+	lines, err := readHistoryLines(s.historyFile)
+	if err != nil {
+		return err.Error()
+	}
+	if len(lines) == 0 {
+		return "暂无历史命令"
+	}
+
+	limit := 30
+	if len(args) > 0 {
+		switch strings.ToLower(args[0]) {
+		case "all":
+			limit = len(lines)
+		default:
+			n, perr := strconv.Atoi(args[0])
+			if perr != nil || n <= 0 {
+				return "用法: :history [N|all]"
+			}
+			limit = n
+		}
+	}
+
+	start := len(lines) - limit
+	if start < 0 {
+		start = 0
+	}
+
+	// 计算编号列宽（用最大编号即末尾行号）
+	maxNum := len(lines)
+	width := len(strconv.Itoa(maxNum))
+
+	var sb strings.Builder
+	shown := len(lines) - start
+	sb.WriteString(fmt.Sprintf("历史命令 (最近 %d 条，共 %d 条，用 !N 回填):\n", shown, len(lines)))
+	for i := start; i < len(lines); i++ {
+		sb.WriteString(fmt.Sprintf("  %*d  %s\n", width, i+1, lines[i]))
+	}
+	sb.WriteString("提示: !N 会把编号 N 的命令回填到输入行，可编辑再回车执行")
+	return sb.String()
 }
 
 // truncateHistory 将历史文件截断到最近 maxLines 行

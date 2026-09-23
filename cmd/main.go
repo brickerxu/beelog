@@ -26,8 +26,24 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "beelog",
 		Short: "JumpServer 多节点批量命令执行工具",
-		Long:  "通过 JumpServer 跳板机同时连接多个目标节点，提供交互式 shell 界面，批量执行命令并聚合展示输出。",
-		RunE:  run,
+		Long: `beelog 通过 JumpServer 跳板机同时连接一个分组下的多个目标节点，
+提供交互式 shell，批量执行命令并聚合展示输出。
+
+常见流程:
+  beelog config init           # 首次使用：向导式生成配置
+  beelog --list-groups         # 查看当前配置里有哪些分组
+  beelog --group web           # 连接 web 分组，进入交互式 shell
+  beelog install-completion    # 安装 bash/zsh 补全脚本
+
+交互式 shell 内支持:
+  - :history / !N              可编号历史 + 回填（支持子串/正则过滤）
+  - :only / :all / @n1,n2 cmd  节点子集执行（持续或一次性）
+  - :mode grouped|merged|stream  动态切换输出模式
+  - :save / :diff              保存上一条结果 / 节点间逐行对比
+  - <远程命令> |> <本地命令>   本地管道，把所有节点输出交给本地 shell 处理
+
+进入 shell 后输入 :help 查看完整命令列表。`,
+		RunE: run,
 	}
 
 	rootCmd.PersistentFlags().StringP("config", "c", "~/.config/beelog/config.yaml", "配置文件路径")

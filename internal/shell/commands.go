@@ -89,7 +89,7 @@ beelog 交互式 Shell 帮助
 快捷键:
   ↑ / ↓                            浏览历史命令
   Tab                              远程文件路径补全；:disconnect/:only 后补全节点名；:mode 后补全模式名
-  Ctrl+C                           终止当前命令（不退出 shell）
+  Ctrl+C                           立即终止当前命令（不退出 shell），下一条命令不受残留输出影响
 `
 
 	// 根据操作系统显示不同的撤销提示
@@ -98,6 +98,12 @@ beelog 交互式 Shell 帮助
 	} else {
 		help += "  Ctrl+Z / Ctrl+_              撤销输入\n"
 	}
+
+	help += `
+运行时长:
+  命令执行期间会实时刷新 [⏱ Xs] 读秒；完成后追加节点耗时汇总（最快/最慢/平均）。
+  tail -f、journalctl -f 等持续输出命令会自动切换到 stream 模式执行（模式设置不变）。
+`
 
 	return help
 }
